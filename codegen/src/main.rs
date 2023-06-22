@@ -11,8 +11,8 @@ use swc_common::{
 };
 use swc_common::{SourceFile, Span};
 use swc_ecma_ast::{
-    BinaryOp, Callee, Decl, Expr, Lit, MemberProp, Module, ModuleItem, Pat, PatOrExpr, Stmt,
-    VarDecl, VarDeclOrExpr,
+    BinaryOp, Callee, Decl, Expr, FnDecl, Lit, MemberProp, Module, ModuleItem, Pat, PatOrExpr,
+    Stmt, VarDecl, VarDeclOrExpr,
 };
 use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax};
 
@@ -51,8 +51,7 @@ pub fn main() {
         })
         .expect("failed to parser module");
 
-    CodegenContext::new(fm)
-        .gen_module(&mut std::io::stdout(), &module)
+    CodegenContext::gen_module(fm, &mut std::io::stdout(), &module)
         .map_err(|e| e.into_diagnostic(&handler).emit())
         .unwrap();
 }
@@ -144,6 +143,14 @@ macro_rules! scope {
     };
 }
 
+struct CodegenBuffers {
+    pub header: BufWriter<Vec<u8>>,
+    pub fun_impl: BufWriter<Vec<u8>>,
+    pub mod_init_fun: BufWriter<Vec<u8>>,
+    pub main_fun_top: BufWriter<Vec<u8>>,
+    pub main_fun: BufWriter<Vec<u8>>,
+}
+
 impl CodegenContext {
     fn new(source_file: Lrc<SourceFile>) -> Self {
         let filename_prefix = reformat_filename(&source_file.name);
@@ -207,89 +214,113 @@ impl CodegenContext {
         }
     }
 
-    fn gen_module(&mut self, w: &mut impl Write, module: &Module) -> Result<(), CodegenError> {
-        let mut header = BufWriter::new(Vec::new());
-        let mut fun_impl = BufWriter::new(Vec::new());
-        let mut mod_init_fun = BufWriter::new(Vec::new());
-        let mut main_fun_top = BufWriter::new(Vec::new());
-        let mut main_fun = BufWriter::new(Vec::new());
+    fn gen_top_level_function(
+        &mut self,
+        fun_decl: &FnDecl,
+        buffers: &mut CodegenBuffers,
+    ) -> Result<(), CodegenError> {
+        let fun_name = self.declare_new(&fun_decl.ident.sym);
+        let mut fun_top = BufWriter::new(Vec::new());
+        let mut fun_body = BufWriter::new(Vec::new());
+        writeln!(
+            &mut buffers.header,
+            "static {VALUE_TYPE} {fun_name}_impl(const {ARGS_TYPE} __args__);"
+        )?;
+        writeln!(
+            &mut buffers.header,
+            "{VALUE_TYPE} {fun_name} = {UNDEFINED};"
+        )?;
+        writeln!(
+            &mut buffers.fun_impl,
+            "static {VALUE_TYPE} {fun_name}_impl(const {ARGS_TYPE} __args__) {{",
+        )?;
+        writeln!(
+            &mut buffers.fun_impl,
+            "{gc_begin_frame}();",
+            gc_begin_frame = internal_func!("gc_begin_frame"),
+        )?;
+
         scope!(self, None, {
-            self.declare("console", internal_global!("console").into());
-            self.declare("__swcjs__", internal_global!("__swcjs__").into());
+            for (i, param) in fun_decl.function.params.iter().enumerate() {
+                if let Pat::Ident(id) = &param.pat {
+                    let sym_name = self.declare_new(&id.sym);
+                    writeln!(
+                        &mut buffers.fun_impl,
+                        "{VALUE_TYPE} {sym_name} = {args_nth}(__args__, {i});",
+                        args_nth = internal_func!("args_nth"),
+                    )?;
+                    writeln!(
+                        &mut buffers.fun_impl,
+                        "{gc_stack_add}(&{sym_name});",
+                        gc_stack_add = internal_func!("gc_stack_add"),
+                    )?;
+                } else {
+                    todo!()
+                }
+            }
+
+            if let Some(body) = &fun_decl.function.body {
+                scope!(self, Some(&mut buffers.fun_impl), {
+                    for stmt in &body.stmts {
+                        self.gen_stmt(&mut fun_body, &mut fun_top, stmt)?;
+                    }
+                    writeln!(&mut buffers.fun_impl, "{{")?;
+                    buffers
+                        .fun_impl
+                        .write_all(fun_top.into_inner().unwrap().as_slice())?;
+                    buffers
+                        .fun_impl
+                        .write_all(fun_body.into_inner().unwrap().as_slice())?;
+                });
+                writeln!(&mut buffers.fun_impl, "}}")?;
+            }
+            writeln!(
+                &mut buffers.fun_impl,
+                "{gc_end_frame}();",
+                gc_end_frame = internal_func!("gc_end_frame"),
+            )?;
+            writeln!(&mut buffers.fun_impl, "return {UNDEFINED};")?;
+        });
+        writeln!(&mut buffers.fun_impl, "}}")?;
+        writeln!(
+            &mut buffers.mod_init_fun,
+            "{fun_name} = {init_global_fn}({fun_name}_impl);",
+            init_global_fn = internal_func!("init_global_fn"),
+        )?;
+        writeln!(
+            &mut buffers.mod_init_fun,
+            "{gc_register_static}(&{fun_name});",
+            gc_register_static = internal_func!("gc_register_static"),
+        )?;
+        Ok(())
+    }
+
+    fn gen_module(
+        source_file: Lrc<SourceFile>,
+        w: &mut impl Write,
+        module: &Module,
+    ) -> Result<(), CodegenError> {
+        let mut this = CodegenContext::new(source_file);
+
+        let mut buffers = CodegenBuffers {
+            header: BufWriter::new(Vec::new()),
+            fun_impl: BufWriter::new(Vec::new()),
+            mod_init_fun: BufWriter::new(Vec::new()),
+            main_fun_top: BufWriter::new(Vec::new()),
+            main_fun: BufWriter::new(Vec::new()),
+        };
+
+        scope!(this, None, {
+            this.declare("console", internal_global!("console").into());
+            this.declare("__swcjs__", internal_global!("__swcjs__").into());
 
             for item in &module.body {
                 match item {
                     ModuleItem::Stmt(Stmt::Decl(Decl::Fn(fun_decl))) => {
-                        let fun_name = self.declare_new(&fun_decl.ident.sym);
-                        let mut fun_top = BufWriter::new(Vec::new());
-                        let mut fun_body = BufWriter::new(Vec::new());
-                        writeln!(
-                            header,
-                            "static {VALUE_TYPE} {fun_name}_impl(const {ARGS_TYPE} __args__);"
-                        )?;
-                        writeln!(header, "{VALUE_TYPE} {fun_name} = {UNDEFINED};")?;
-                        writeln!(
-                            fun_impl,
-                            "static {VALUE_TYPE} {fun_name}_impl(const {ARGS_TYPE} __args__) {{",
-                        )?;
-                        writeln!(
-                            fun_impl,
-                            "{gc_begin_frame}();",
-                            gc_begin_frame = internal_func!("gc_begin_frame"),
-                        )?;
-
-                        scope!(self, None, {
-                            for (i, param) in fun_decl.function.params.iter().enumerate() {
-                                if let Pat::Ident(id) = &param.pat {
-                                    let sym_name = self.declare_new(&id.sym);
-                                    writeln!(
-                                        fun_impl,
-                                        "{VALUE_TYPE} {sym_name} = {args_nth}(__args__, {i});",
-                                        args_nth = internal_func!("args_nth"),
-                                    )?;
-                                    writeln!(
-                                        fun_impl,
-                                        "{gc_stack_add}(&{sym_name});",
-                                        gc_stack_add = internal_func!("gc_stack_add"),
-                                    )?;
-                                } else {
-                                    todo!()
-                                }
-                            }
-
-                            if let Some(body) = &fun_decl.function.body {
-                                scope!(self, Some(&mut fun_impl), {
-                                    for stmt in &body.stmts {
-                                        self.gen_stmt(&mut fun_body, &mut fun_top, stmt)?;
-                                    }
-                                    writeln!(fun_impl, "{{")?;
-                                    fun_impl.write_all(fun_top.into_inner().unwrap().as_slice())?;
-                                    fun_impl
-                                        .write_all(fun_body.into_inner().unwrap().as_slice())?;
-                                });
-                                writeln!(fun_impl, "}}")?;
-                            }
-                            writeln!(
-                                fun_impl,
-                                "{gc_end_frame}();",
-                                gc_end_frame = internal_func!("gc_end_frame"),
-                            )?;
-                            writeln!(fun_impl, "return {UNDEFINED};")?;
-                        });
-                        writeln!(fun_impl, "}}")?;
-                        writeln!(
-                            mod_init_fun,
-                            "{fun_name} = {init_global_fn}({fun_name}_impl);",
-                            init_global_fn = internal_func!("init_global_fn"),
-                        )?;
-                        writeln!(
-                            mod_init_fun,
-                            "{gc_register_static}(&{fun_name});",
-                            gc_register_static = internal_func!("gc_register_static"),
-                        )?;
+                        this.gen_top_level_function(fun_decl, &mut buffers)?;
                     }
                     ModuleItem::Stmt(stmt) => {
-                        self.gen_stmt(&mut main_fun, &mut main_fun_top, stmt)?;
+                        this.gen_stmt(&mut buffers.main_fun, &mut buffers.main_fun_top, stmt)?;
                     }
                     _ => {
                         todo!()
@@ -301,13 +332,13 @@ impl CodegenContext {
         writeln!(w, "/* generated - do not edit */")?;
         writeln!(w, "#include <swcjs.h>")?;
 
-        w.write_all(header.into_inner().unwrap().as_slice())?;
+        w.write_all(buffers.header.into_inner().unwrap().as_slice())?;
 
-        w.write_all(fun_impl.into_inner().unwrap().as_slice())?;
+        w.write_all(buffers.fun_impl.into_inner().unwrap().as_slice())?;
 
-        writeln!(w, "void {}__swcjs_mod_init__() {{", self.filename_prefix)?;
+        writeln!(w, "void {}__swcjs_mod_init__() {{", this.filename_prefix)?;
         writeln!(w, "swcjs_initialize();")?;
-        w.write_all(mod_init_fun.into_inner().unwrap().as_slice())?;
+        w.write_all(buffers.mod_init_fun.into_inner().unwrap().as_slice())?;
         writeln!(w, "}}")?;
 
         writeln!(w, "int main() {{")?;
@@ -316,10 +347,10 @@ impl CodegenContext {
             "{gc_begin_frame}();",
             gc_begin_frame = internal_func!("gc_begin_frame"),
         )?;
-        writeln!(w, "{}__swcjs_mod_init__();", self.filename_prefix)?;
+        writeln!(w, "{}__swcjs_mod_init__();", this.filename_prefix)?;
         writeln!(w, "{{")?;
-        w.write_all(main_fun_top.into_inner().unwrap().as_slice())?;
-        w.write_all(main_fun.into_inner().unwrap().as_slice())?;
+        w.write_all(buffers.main_fun_top.into_inner().unwrap().as_slice())?;
+        w.write_all(buffers.main_fun.into_inner().unwrap().as_slice())?;
         writeln!(w, "}}")?;
         writeln!(
             w,

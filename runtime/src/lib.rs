@@ -56,6 +56,18 @@ pub struct Object {
 #[derive(Debug)]
 pub struct Function {
     pub pointer: extern "C" fn(args: &ArgsT) -> *mut ValueT,
+    pub capture: Vec<*mut ValueT>,
+    pub this: *mut ValueT,
+}
+
+impl Function {
+    fn internal(pointer: extern "C" fn(args: &ArgsT) -> *mut ValueT) -> Self {
+        Self {
+            pointer,
+            capture: vec![],
+            this: undefined_mut(),
+        }
+    }
 }
 
 pub const fn undefined<T>() -> *const T {
@@ -182,9 +194,7 @@ pub extern "C" fn swcjs_initialize() {
 }
 
 fn init_swcjs() {
-    let gc_fn = alloc(ValueT::Function(Function {
-        pointer: gc::swcjs_gc,
-    }));
+    let gc_fn = alloc(ValueT::Function(Function::internal(gc::swcjs_gc)));
 
     unsafe {
         swcjs_global___swcjs__ = swcjs_object! {
@@ -195,9 +205,7 @@ fn init_swcjs() {
 }
 
 fn init_console() {
-    let console_log = alloc(ValueT::Function(Function {
-        pointer: console_log,
-    }));
+    let console_log = alloc(ValueT::Function(Function::internal(console_log)));
 
     unsafe {
         swcjs_global_console = swcjs_object! {
@@ -253,7 +261,8 @@ pub extern "C" fn swcjs_args_nth(con: *const ArgsT, n: u16) -> *mut ValueT {
 
 #[no_mangle]
 pub extern "C" fn swcjs_init_global_fn(fun: extern "C" fn(&ArgsT) -> *mut ValueT) -> *mut ValueT {
-    alloc(ValueT::Function(Function { pointer: fun }))
+    // TODO: capture this from module
+    alloc(ValueT::Function(Function::internal(fun)))
 }
 
 #[no_mangle]
