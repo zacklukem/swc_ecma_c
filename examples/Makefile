@@ -18,6 +18,10 @@ rust_build:
 run: _build/test
 	@echo "[RUNNING]"; \
 	_build/test
+
+format: _build/test.c
+	@echo "[FORMATTING]"; \
+	clang-format -i _build/test.c
 	
 clean:
 	@rm -rf _build;\

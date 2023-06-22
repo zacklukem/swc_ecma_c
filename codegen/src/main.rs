@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{BufWriter, Write};
 
 use swc_common::sync::Lrc;
 use swc_common::{
@@ -89,35 +89,71 @@ const ARGS_TYPE: &str = internal_type_ptr!("ArgsT");
 
 impl CodegenContext {
     fn gen_module(&mut self, w: &mut impl Write, module: &Module) -> Result<(), CodegenError> {
-        write!(w, "#include <swcjs.h>\n")?;
-        write!(w, "int main() {{\n")?;
-        write!(w, "swcjs_initialize();\n")?;
+        let mut header = BufWriter::new(Vec::new());
+        let mut fun_impl = BufWriter::new(Vec::new());
+        let mut mod_init_fun = BufWriter::new(Vec::new());
+
+        let mut main_fun = BufWriter::new(Vec::new());
+
         for item in &module.body {
             match item {
                 ModuleItem::Stmt(Stmt::Decl(Decl::Fn(fun_decl))) => {
-                    write!(
-                        w,
-                        "{VALUE_TYPE} {}({ARGS_TYPE} __args__) {{\n",
+                    writeln!(
+                        header,
+                        "{VALUE_TYPE} {}_impl({ARGS_TYPE} __args__);",
+                        fun_decl.ident.sym
+                    )?;
+                    writeln!(header, "{VALUE_TYPE} {} = {UNDEFINED};", fun_decl.ident.sym)?;
+                    writeln!(
+                        fun_impl,
+                        "{VALUE_TYPE} {}_impl({ARGS_TYPE} __args__) {{",
                         fun_decl.ident.sym
                     )?;
                     if let Some(body) = &fun_decl.function.body {
-                        write!(w, "{{\n")?;
+                        writeln!(fun_impl, "{{")?;
                         for stmt in &body.stmts {
-                            self.gen_stmt(w, stmt)?;
+                            self.gen_stmt(&mut fun_impl, stmt)?;
                         }
-                        write!(w, "}}\n")?;
+                        writeln!(fun_impl, "}}")?;
                     }
-                    write!(w, "}}\n")?;
+                    writeln!(fun_impl, "return {UNDEFINED};")?;
+                    writeln!(fun_impl, "}}")?;
+                    writeln!(
+                        mod_init_fun,
+                        "{fun_name} = {init_global_fn}({fun_name}_impl);",
+                        fun_name = fun_decl.ident.sym,
+                        init_global_fn = internal_func!("init_global_fn"),
+                    )?;
                 }
                 ModuleItem::Stmt(stmt) => {
-                    self.gen_stmt(w, stmt)?;
+                    self.gen_stmt(&mut main_fun, stmt)?;
                 }
                 _ => {
                     todo!()
                 }
             }
         }
-        write!(w, "}}\n")?;
+
+        writeln!(w, "/* generated - do not edit */")?;
+        writeln!(w, "#include <swcjs.h>")?;
+
+        w.write_all(header.into_inner().unwrap().as_slice())?;
+
+        w.write_all(fun_impl.into_inner().unwrap().as_slice())?;
+
+        writeln!(w, "void mod_init() {{")?;
+        writeln!(w, "swcjs_initialize();")?;
+        w.write_all(mod_init_fun.into_inner().unwrap().as_slice())?;
+        writeln!(w, "}}")?;
+
+        writeln!(w, "int main() {{")?;
+        writeln!(w, "mod_init();")?;
+        writeln!(w, "{{")?;
+        w.write_all(main_fun.into_inner().unwrap().as_slice())?;
+        writeln!(w, "}}")?;
+        writeln!(w, "return 0;")?;
+        writeln!(w, "}}")?;
+
         Ok(())
     }
 
@@ -167,7 +203,6 @@ impl CodegenContext {
                 }
                 _ => todo!(),
             },
-
             Expr::Bin(bin) => {
                 let fun_name = match &bin.op {
                     BinaryOp::EqEq => internal_func!("bin_eqeq"),
@@ -228,6 +263,12 @@ impl CodegenContext {
                     write!(w, "else\n")?;
                     self.gen_stmt(w, alt)?;
                 }
+            }
+            Stmt::While(stmt) => {
+                write!(w, "while ({}(", internal_func!("if_condition"))?;
+                self.gen_expr(w, &stmt.test)?;
+                write!(w, ")) ")?;
+                self.gen_stmt(w, &stmt.body)?;
             }
             Stmt::Decl(Decl::Var(var)) => {
                 // TODO: ident sanitization

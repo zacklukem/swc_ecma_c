@@ -6,6 +6,8 @@ use std::{
     ptr::{null, null_mut},
 };
 
+pub mod binop;
+
 pub struct ArgsT {
     pub args: Vec<*mut ValueT>,
 }
@@ -26,7 +28,7 @@ pub struct Object {
 
 #[derive(Debug)]
 pub struct Function {
-    pub pointer: fn(args: &ArgsT) -> *mut ValueT,
+    pub pointer: extern "C" fn(args: &ArgsT) -> *mut ValueT,
 }
 
 pub const fn undefined<T>() -> *const T {
@@ -63,7 +65,7 @@ impl<'a, T> From<*mut T> for PointerMut<'a, T> {
     }
 }
 
-fn alloc<'a, T>(value: T) -> &'a mut T {
+pub fn alloc<'a, T>(value: T) -> &'a mut T {
     Box::leak(Box::new(value))
 }
 
@@ -96,7 +98,7 @@ impl<'a, T> From<*mut T> for Pointer<'a, T> {
 #[no_mangle]
 pub static mut console: *mut ValueT = undefined_mut();
 
-fn console_log(args: &ArgsT) -> *mut ValueT {
+extern "C" fn console_log(args: &ArgsT) -> *mut ValueT {
     for (i, arg) in args.args.iter().cloned().enumerate() {
         if i != 0 {
             print!(" ");
@@ -149,27 +151,6 @@ pub extern "C" fn swcjs_initialize() {
 }
 
 #[no_mangle]
-pub extern "C" fn swcjs_bin_eqeq(lhs: *const ValueT, rhs: *const ValueT) -> *mut ValueT {
-    use Pointer::*;
-
-    let lhs = Pointer::from(lhs);
-    let rhs = Pointer::from(rhs);
-
-    let out = match (lhs, rhs) {
-        (Null, Null) | (Undefined, Undefined) => true,
-        (_, Undefined) | (Undefined, _) | (Null, _) | (_, Null) => false,
-        (Value(ValueT::Boolean(lhs)), Value(ValueT::Boolean(rhs))) => lhs == rhs,
-        (Value(ValueT::Number(lhs)), Value(ValueT::Number(rhs))) => lhs == rhs,
-        (Value(ValueT::String(lhs)), Value(ValueT::String(rhs))) => lhs == rhs,
-        (Value(_), Value(_)) => {
-            todo!()
-        }
-    };
-
-    alloc(ValueT::Boolean(out))
-}
-
-#[no_mangle]
 pub extern "C" fn swcjs_lit_str(s: *const c_char) -> *mut ValueT {
     debug_assert!(s != null());
     debug_assert!(s != undefined());
@@ -200,6 +181,19 @@ pub extern "C" fn swcjs_if_condition(con: *const ValueT) -> bool {
         Pointer::Value(ValueT::Boolean(b)) => *b,
         _ => todo!(),
     }
+}
+
+#[no_mangle]
+pub extern "C" fn swcjs_args_nth(con: *const ArgsT, n: u16) -> *mut ValueT {
+    debug_assert!(con != null());
+    debug_assert!(con != undefined());
+    let con = unsafe { &*con };
+    con.args[n as usize]
+}
+
+#[no_mangle]
+pub extern "C" fn swcjs_init_global_fn(fun: extern "C" fn(&ArgsT) -> *mut ValueT) -> *mut ValueT {
+    alloc(ValueT::Function(Function { pointer: fun }))
 }
 
 #[no_mangle]
