@@ -109,6 +109,20 @@ impl CodegenContext {
                         "{VALUE_TYPE} {}_impl({ARGS_TYPE} __args__) {{",
                         fun_decl.ident.sym
                     )?;
+
+                    for (i, param) in fun_decl.function.params.iter().enumerate() {
+                        if let Pat::Ident(id) = &param.pat {
+                            writeln!(
+                                fun_impl,
+                                "{VALUE_TYPE} {sym_name} = {args_nth}(__args__, {i});",
+                                sym_name = id.sym,
+                                args_nth = internal_func!("args_nth"),
+                            )?;
+                        } else {
+                            todo!()
+                        }
+                    }
+
                     if let Some(body) = &fun_decl.function.body {
                         writeln!(fun_impl, "{{")?;
                         for stmt in &body.stmts {
@@ -298,6 +312,15 @@ impl CodegenContext {
 
             Stmt::Expr(expr_stmt) => {
                 self.gen_expr(w, &expr_stmt.expr)?;
+                write!(w, ";\n")?;
+            }
+            Stmt::Return(ret_stmt) => {
+                write!(w, "return ")?;
+                if let Some(expr) = &ret_stmt.arg {
+                    self.gen_expr(w, expr)?;
+                } else {
+                    write!(w, "{UNDEFINED}")?;
+                }
                 write!(w, ";\n")?;
             }
             _ => {

@@ -72,3 +72,24 @@ pub extern "C" fn swcjs_bin_add(lhs: *const ValueT, rhs: *const ValueT) -> *mut 
         }
     }
 }
+
+#[no_mangle]
+pub extern "C" fn swcjs_bin_sub(lhs: *const ValueT, rhs: *const ValueT) -> *mut ValueT {
+    use Pointer::*;
+
+    let lhs = Pointer::from(lhs);
+    let rhs = Pointer::from(rhs);
+
+    match (lhs, rhs) {
+        (Undefined, _) | (_, Undefined) => alloc(ValueT::Number(f64::NAN)),
+        (Null, _) | (_, Null) => todo!("javascript sucks"),
+        (Value(ValueT::Boolean(_lhs)), Value(ValueT::Boolean(_rhs))) => todo!(),
+        (Value(ValueT::Number(lhs)), Value(ValueT::Number(rhs))) => {
+            alloc(ValueT::Number(lhs - rhs))
+        }
+        (Value(ValueT::String(_lhs)), Value(ValueT::String(_rhs))) => todo!(),
+        (Value(_), Value(_)) => {
+            todo!()
+        }
+    }
+}

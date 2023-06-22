@@ -2,6 +2,16 @@ function my_function() {
   console.log("hello world");
 }
 
+function fib_recursive(n) {
+  if (n < 2) {
+    return 1;
+  } else {
+    return fib_recursive(n - 1) + fib_recursive(n - 2);
+  }
+}
+
+console.log("Fib 8 rec:", fib_recursive(8));
+
 my_function();
 let a;
 let b = 32;
@@ -23,7 +33,7 @@ let v2 = 1;
 
 let i = 0;
 while (i < 20) {
-  console.log(v2);
+  console.log(i + 1, v2);
 
   let temp = v2;
   v2 = v1 + v2;
