@@ -59,11 +59,12 @@ pub fn main() {
 
 struct Scope {
     varmap: HashMap<String, Cow<'static, str>>,
+    scope_end: BufWriter<Vec<u8>>,
 }
 
 struct CodegenContext {
     scope_stack: Vec<Scope>,
-    source_file: Lrc<SourceFile>,
+    _source_file: Lrc<SourceFile>,
     filename_prefix: String,
     varname_counter: usize,
 }
@@ -131,10 +132,15 @@ fn reformat_filename(filename: &FileName) -> String {
 }
 
 macro_rules! scope {
-    ($self: expr, $block: expr) => {
+    ($self: expr, None, $block: expr) => {
         $self.enter_scope();
         $block;
-        $self.exit_scope()
+        $self.exit_scope(None::<&mut Vec<u8>>)
+    };
+    ($self: expr, $w: expr, $block: expr) => {
+        $self.enter_scope();
+        $block;
+        $self.exit_scope($w)
     };
 }
 
@@ -143,10 +149,14 @@ impl CodegenContext {
         let filename_prefix = reformat_filename(&source_file.name);
         CodegenContext {
             scope_stack: vec![],
-            source_file,
+            _source_file: source_file,
             filename_prefix,
             varname_counter: 0,
         }
+    }
+
+    fn scope_end(&mut self) -> Option<&mut impl Write> {
+        Some(&mut self.scope_stack.last_mut()?.scope_end)
     }
 
     fn resolve(&self, name: &str) -> Option<Cow<'static, str>> {
@@ -185,11 +195,16 @@ impl CodegenContext {
     fn enter_scope(&mut self) {
         self.scope_stack.push(Scope {
             varmap: HashMap::new(),
+            scope_end: BufWriter::new(Vec::new()),
         })
     }
 
-    fn exit_scope(&mut self) {
-        self.scope_stack.pop();
+    fn exit_scope(&mut self, w: Option<&mut impl Write>) {
+        let scope = self.scope_stack.pop();
+        if let (Some(scope), Some(w)) = (scope, w) {
+            w.write_all(scope.scope_end.into_inner().unwrap().as_slice())
+                .unwrap();
+        }
     }
 
     fn gen_module(&mut self, w: &mut impl Write, module: &Module) -> Result<(), CodegenError> {
@@ -198,8 +213,9 @@ impl CodegenContext {
         let mut mod_init_fun = BufWriter::new(Vec::new());
         let mut main_fun_top = BufWriter::new(Vec::new());
         let mut main_fun = BufWriter::new(Vec::new());
-        scope!(self, {
+        scope!(self, None, {
             self.declare("console", internal_global!("console").into());
+            self.declare("__swcjs__", internal_global!("__swcjs__").into());
 
             for item in &module.body {
                 match item {
@@ -222,7 +238,7 @@ impl CodegenContext {
                             gc_begin_frame = internal_func!("gc_begin_frame"),
                         )?;
 
-                        scope!(self, {
+                        scope!(self, None, {
                             for (i, param) in fun_decl.function.params.iter().enumerate() {
                                 if let Pat::Ident(id) = &param.pat {
                                     let sym_name = self.declare_new(&id.sym);
@@ -242,14 +258,15 @@ impl CodegenContext {
                             }
 
                             if let Some(body) = &fun_decl.function.body {
-                                scope!(self, {
+                                scope!(self, Some(&mut fun_impl), {
                                     for stmt in &body.stmts {
                                         self.gen_stmt(&mut fun_body, &mut fun_top, stmt)?;
                                     }
+                                    writeln!(fun_impl, "{{")?;
+                                    fun_impl.write_all(fun_top.into_inner().unwrap().as_slice())?;
+                                    fun_impl
+                                        .write_all(fun_body.into_inner().unwrap().as_slice())?;
                                 });
-                                writeln!(fun_impl, "{{")?;
-                                fun_impl.write_all(fun_top.into_inner().unwrap().as_slice())?;
-                                fun_impl.write_all(fun_body.into_inner().unwrap().as_slice())?;
                                 writeln!(fun_impl, "}}")?;
                             }
                             writeln!(
@@ -267,7 +284,7 @@ impl CodegenContext {
                         )?;
                         writeln!(
                             mod_init_fun,
-                            "{gc_register_static}({fun_name});",
+                            "{gc_register_static}(&{fun_name});",
                             gc_register_static = internal_func!("gc_register_static"),
                         )?;
                     }
@@ -448,8 +465,8 @@ impl CodegenContext {
                 self.gen_vardecl(w, fun_top, var)?;
             }
             Stmt::Block(stmt) => {
-                write!(w, "{{\n")?;
-                scope!(self, {
+                scope!(self, Some(w), {
+                    write!(w, "{{\n")?;
                     for stmt in &stmt.stmts {
                         self.gen_stmt(w, fun_top, stmt)?;
                     }
@@ -515,6 +532,7 @@ impl CodegenContext {
             if let Pat::Ident(id) = &decl.name {
                 let ident = self.declare_new(&id.sym);
                 writeln!(fun_top, "{VALUE_TYPE} {ident} = {UNDEFINED};")?;
+                writeln!(self.scope_end().unwrap(), "{ident} = {UNDEFINED};")?;
                 writeln!(
                     fun_top,
                     "{gc_stack_add}(&{ident});",

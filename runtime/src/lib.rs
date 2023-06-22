@@ -1,10 +1,11 @@
 #![crate_type = "staticlib"]
-#![feature(c_variadic)]
-use gc::register_static;
+#![feature(c_variadic, hash_extract_if)]
+
+use gc::alloc;
 use libc::c_char;
 use std::{
     collections::HashMap,
-    ptr::{null, null_mut},
+    ptr::{null, null_mut, NonNull},
 };
 
 pub mod binop;
@@ -14,17 +15,8 @@ pub struct ArgsT {
     pub args: Vec<*mut ValueT>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-#[repr(u8)]
-enum GcColor {
-    White,
-    Gray,
-    Black,
-}
-
 #[derive(Debug)]
 pub struct ValueT {
-    gc_state: GcColor,
     pub inner: ValueInner,
 }
 
@@ -42,7 +34,6 @@ macro_rules! value_constructor {
         #[allow(non_snake_case)]
         pub fn $name(n: $inner_ty) -> Self {
             Self {
-                gc_state: GcColor::White,
                 inner: ValueInner::$name(n),
             }
         }
@@ -55,30 +46,6 @@ impl ValueT {
     value_constructor!(Boolean, bool);
     value_constructor!(Function, Function);
     value_constructor!(Object, Object);
-
-    pub(crate) fn is_white(&self) -> bool {
-        self.gc_state == GcColor::White
-    }
-
-    pub(crate) fn is_gray(&self) -> bool {
-        self.gc_state == GcColor::Gray
-    }
-
-    pub(crate) fn is_black(&self) -> bool {
-        self.gc_state == GcColor::Black
-    }
-
-    pub(crate) fn set_white(&mut self) {
-        self.gc_state = GcColor::White;
-    }
-
-    pub(crate) fn set_gray(&mut self) {
-        self.gc_state = GcColor::Gray;
-    }
-
-    pub(crate) fn set_black(&mut self) {
-        self.gc_state = GcColor::Black;
-    }
 }
 
 #[derive(Debug, Default)]
@@ -125,10 +92,6 @@ impl<'a, T> From<*mut T> for PointerMut<'a, T> {
     }
 }
 
-pub fn alloc<'a, T>(value: T) -> &'a mut T {
-    Box::leak(Box::new(value))
-}
-
 impl<'a, T> From<*const T> for Pointer<'a, T> {
     fn from(ptr: *const T) -> Self {
         if ptr == null() {
@@ -157,6 +120,9 @@ impl<'a, T> From<*mut T> for Pointer<'a, T> {
 
 #[no_mangle]
 pub static mut swcjs_global_console: *mut ValueT = undefined_mut();
+
+#[no_mangle]
+pub static mut swcjs_global___swcjs__: *mut ValueT = undefined_mut();
 
 extern "C" fn console_log(args: &ArgsT) -> *mut ValueT {
     for (i, arg) in args.args.iter().cloned().enumerate() {
@@ -195,21 +161,49 @@ extern "C" fn console_log(args: &ArgsT) -> *mut ValueT {
     undefined_mut()
 }
 
+macro_rules! swcjs_object {
+    ($($name: literal : $value: expr),*) => {
+        {
+            let mut object: Object = Default::default();
+            $(
+                object.properties.insert($name.to_string(), $value);
+            )*
+            alloc(ValueT::Object(object))
+        }
+    };
+}
+
 #[no_mangle]
 pub extern "C" fn swcjs_initialize() {
+    gc::init();
+
+    init_console();
+    init_swcjs();
+}
+
+fn init_swcjs() {
+    let gc_fn = alloc(ValueT::Function(Function {
+        pointer: gc::swcjs_gc,
+    }));
+
+    unsafe {
+        swcjs_global___swcjs__ = swcjs_object! {
+            "gc": gc_fn
+        };
+        gc::register_static(NonNull::from(&swcjs_global___swcjs__));
+    }
+}
+
+fn init_console() {
     let console_log = alloc(ValueT::Function(Function {
         pointer: console_log,
     }));
 
-    let mut console_object: Object = Default::default();
-
-    console_object
-        .properties
-        .insert("log".to_string(), console_log);
-
     unsafe {
-        swcjs_global_console = alloc(ValueT::Object(console_object));
-        gc::register_static(swcjs_global_console);
+        swcjs_global_console = swcjs_object! {
+            "log": console_log
+        };
+        gc::register_static(NonNull::from(&swcjs_global_console));
     }
 }
 

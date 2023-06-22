@@ -633,6 +633,7 @@ version = "0.1.0"
 dependencies = [
  "cbindgen",
  "libc",
+ "parking_lot",
 ]
 
 [[package]]

@@ -1,3 +1,8 @@
+let drop_me = "drop me";
+drop_me = "bye";
+
+__swcjs__.gc();
+
 function my_function() {
   let words = "hello world";
   console.log(words);
