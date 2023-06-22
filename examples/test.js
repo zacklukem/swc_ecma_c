@@ -1,5 +1,6 @@
 function my_function() {
-  console.log("hello world");
+  let words = "hello world";
+  console.log(words);
 }
 
 function fib_recursive(n) {
@@ -31,13 +32,10 @@ console.log("Fibonacci:");
 let v1 = 1;
 let v2 = 1;
 
-let i = 0;
-while (i < 20) {
+for (let i = 0; i < 20; i = i + 1) {
   console.log(i + 1, v2);
 
   let temp = v2;
   v2 = v1 + v2;
   v1 = temp;
-
-  i = i + 1;
 }
