@@ -1,5 +1,6 @@
 #![crate_type = "staticlib"]
 #![feature(c_variadic)]
+use gc::register_static;
 use libc::c_char;
 use std::{
     collections::HashMap,
@@ -7,18 +8,77 @@ use std::{
 };
 
 pub mod binop;
+pub mod gc;
 
 pub struct ArgsT {
     pub args: Vec<*mut ValueT>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum GcColor {
+    White,
+    Gray,
+    Black,
+}
+
 #[derive(Debug)]
-pub enum ValueT {
+pub struct ValueT {
+    gc_state: GcColor,
+    pub inner: ValueInner,
+}
+
+#[derive(Debug)]
+pub enum ValueInner {
     Number(f64),
     String(String),
     Boolean(bool),
     Function(Function),
     Object(Object),
+}
+
+macro_rules! value_constructor {
+    ($name: ident, $inner_ty: ty) => {
+        #[allow(non_snake_case)]
+        pub fn $name(n: $inner_ty) -> Self {
+            Self {
+                gc_state: GcColor::White,
+                inner: ValueInner::$name(n),
+            }
+        }
+    };
+}
+
+impl ValueT {
+    value_constructor!(Number, f64);
+    value_constructor!(String, String);
+    value_constructor!(Boolean, bool);
+    value_constructor!(Function, Function);
+    value_constructor!(Object, Object);
+
+    pub(crate) fn is_white(&self) -> bool {
+        self.gc_state == GcColor::White
+    }
+
+    pub(crate) fn is_gray(&self) -> bool {
+        self.gc_state == GcColor::Gray
+    }
+
+    pub(crate) fn is_black(&self) -> bool {
+        self.gc_state == GcColor::Black
+    }
+
+    pub(crate) fn set_white(&mut self) {
+        self.gc_state = GcColor::White;
+    }
+
+    pub(crate) fn set_gray(&mut self) {
+        self.gc_state = GcColor::Gray;
+    }
+
+    pub(crate) fn set_black(&mut self) {
+        self.gc_state = GcColor::Black;
+    }
 }
 
 #[derive(Debug, Default)]
@@ -110,21 +170,23 @@ extern "C" fn console_log(args: &ArgsT) -> *mut ValueT {
             Pointer::Undefined => {
                 print!("undefined");
             }
-            Pointer::Value(ValueT::Number(n)) => {
-                print!("{}", n);
-            }
-            Pointer::Value(ValueT::String(s)) => {
-                print!("{}", s);
-            }
-            Pointer::Value(ValueT::Boolean(b)) => {
-                print!("{}", b);
-            }
-            Pointer::Value(ValueT::Function(_)) => {
-                print!("[Function]");
-            }
-            Pointer::Value(ValueT::Object(_)) => {
-                print!("[Object]");
-            } //
+            Pointer::Value(value) => match &value.inner {
+                ValueInner::Number(n) => {
+                    print!("{}", n);
+                }
+                ValueInner::String(s) => {
+                    print!("{}", s);
+                }
+                ValueInner::Boolean(b) => {
+                    print!("{}", b);
+                }
+                ValueInner::Function(_) => {
+                    print!("[Function]");
+                }
+                ValueInner::Object(_) => {
+                    print!("[Object]");
+                } //
+            },
         }
     }
 
@@ -147,6 +209,7 @@ pub extern "C" fn swcjs_initialize() {
 
     unsafe {
         swcjs_global_console = alloc(ValueT::Object(console_object));
+        gc::register_static(swcjs_global_console);
     }
 }
 
@@ -178,7 +241,10 @@ pub extern "C" fn swcjs_lit_bool(v: libc::c_uchar) -> *mut ValueT {
 pub extern "C" fn swcjs_if_condition(con: *const ValueT) -> bool {
     let con = Pointer::from(con);
     match con {
-        Pointer::Value(ValueT::Boolean(b)) => *b,
+        Pointer::Value(ValueT {
+            inner: ValueInner::Boolean(b),
+            ..
+        }) => *b,
         _ => todo!(),
     }
 }
@@ -209,7 +275,11 @@ pub unsafe extern "C" fn swcjs_expr_call(
 
     let fun = Pointer::from(fun);
 
-    if let Pointer::Value(ValueT::Function(fun)) = fun {
+    if let Pointer::Value(ValueT {
+        inner: ValueInner::Function(fun),
+        ..
+    }) = fun
+    {
         (fun.pointer)(&ArgsT { args: args_list })
     } else {
         // TODO: Throw TypeError
@@ -223,7 +293,11 @@ pub extern "C" fn swcjs_expr_member(val: *mut ValueT, prop: *const c_char) -> *m
     let prop = unsafe { std::ffi::CStr::from_ptr(prop) };
     let prop = prop.to_string_lossy().to_string();
 
-    if let PointerMut::Value(ValueT::Object(obj)) = val {
+    if let PointerMut::Value(ValueT {
+        inner: ValueInner::Object(obj),
+        ..
+    }) = val
+    {
         obj.properties
             .get(&prop)
             .cloned()

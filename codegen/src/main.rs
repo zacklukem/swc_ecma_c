@@ -216,6 +216,11 @@ impl CodegenContext {
                             fun_impl,
                             "static {VALUE_TYPE} {fun_name}_impl(const {ARGS_TYPE} __args__) {{",
                         )?;
+                        writeln!(
+                            fun_impl,
+                            "{gc_begin_frame}();",
+                            gc_begin_frame = internal_func!("gc_begin_frame"),
+                        )?;
 
                         scope!(self, {
                             for (i, param) in fun_decl.function.params.iter().enumerate() {
@@ -225,6 +230,11 @@ impl CodegenContext {
                                         fun_impl,
                                         "{VALUE_TYPE} {sym_name} = {args_nth}(__args__, {i});",
                                         args_nth = internal_func!("args_nth"),
+                                    )?;
+                                    writeln!(
+                                        fun_impl,
+                                        "{gc_stack_add}(&{sym_name});",
+                                        gc_stack_add = internal_func!("gc_stack_add"),
                                     )?;
                                 } else {
                                     todo!()
@@ -242,6 +252,11 @@ impl CodegenContext {
                                 fun_impl.write_all(fun_body.into_inner().unwrap().as_slice())?;
                                 writeln!(fun_impl, "}}")?;
                             }
+                            writeln!(
+                                fun_impl,
+                                "{gc_end_frame}();",
+                                gc_end_frame = internal_func!("gc_end_frame"),
+                            )?;
                             writeln!(fun_impl, "return {UNDEFINED};")?;
                         });
                         writeln!(fun_impl, "}}")?;
@@ -249,6 +264,11 @@ impl CodegenContext {
                             mod_init_fun,
                             "{fun_name} = {init_global_fn}({fun_name}_impl);",
                             init_global_fn = internal_func!("init_global_fn"),
+                        )?;
+                        writeln!(
+                            mod_init_fun,
+                            "{gc_register_static}({fun_name});",
+                            gc_register_static = internal_func!("gc_register_static"),
                         )?;
                     }
                     ModuleItem::Stmt(stmt) => {
@@ -274,11 +294,21 @@ impl CodegenContext {
         writeln!(w, "}}")?;
 
         writeln!(w, "int main() {{")?;
+        writeln!(
+            w,
+            "{gc_begin_frame}();",
+            gc_begin_frame = internal_func!("gc_begin_frame"),
+        )?;
         writeln!(w, "{}__swcjs_mod_init__();", self.filename_prefix)?;
         writeln!(w, "{{")?;
         w.write_all(main_fun_top.into_inner().unwrap().as_slice())?;
         w.write_all(main_fun.into_inner().unwrap().as_slice())?;
         writeln!(w, "}}")?;
+        writeln!(
+            w,
+            "{gc_end_frame}();",
+            gc_end_frame = internal_func!("gc_end_frame"),
+        )?;
         writeln!(w, "return 0;")?;
         writeln!(w, "}}")?;
 
@@ -454,6 +484,12 @@ impl CodegenContext {
                 write!(w, ";\n")?;
             }
             Stmt::Return(ret_stmt) => {
+                // TODO: save return value to previous stack?
+                writeln!(
+                    w,
+                    "{gc_end_frame}();",
+                    gc_end_frame = internal_func!("gc_end_frame"),
+                )?;
                 write!(w, "return ")?;
                 if let Some(expr) = &ret_stmt.arg {
                     self.gen_expr(w, fun_top, expr)?;
@@ -479,6 +515,11 @@ impl CodegenContext {
             if let Pat::Ident(id) = &decl.name {
                 let ident = self.declare_new(&id.sym);
                 writeln!(fun_top, "{VALUE_TYPE} {ident} = {UNDEFINED};")?;
+                writeln!(
+                    fun_top,
+                    "{gc_stack_add}(&{ident});",
+                    gc_stack_add = internal_func!("gc_stack_add"),
+                )?;
 
                 if let Some(init) = &decl.init {
                     write!(w, "{} = ", ident)?;

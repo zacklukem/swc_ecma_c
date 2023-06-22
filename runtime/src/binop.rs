@@ -1,4 +1,4 @@
-use crate::{alloc, Pointer, ValueT};
+use crate::{alloc, Pointer, ValueInner, ValueT};
 
 #[no_mangle]
 pub extern "C" fn swcjs_bin_eqeq(lhs: *const ValueT, rhs: *const ValueT) -> *mut ValueT {
@@ -10,12 +10,14 @@ pub extern "C" fn swcjs_bin_eqeq(lhs: *const ValueT, rhs: *const ValueT) -> *mut
     let out = match (lhs, rhs) {
         (Null, Null) | (Undefined, Undefined) => true,
         (_, Undefined) | (Undefined, _) | (Null, _) | (_, Null) => false,
-        (Value(ValueT::Boolean(lhs)), Value(ValueT::Boolean(rhs))) => lhs == rhs,
-        (Value(ValueT::Number(lhs)), Value(ValueT::Number(rhs))) => lhs == rhs,
-        (Value(ValueT::String(lhs)), Value(ValueT::String(rhs))) => lhs == rhs,
-        (Value(_), Value(_)) => {
-            todo!()
-        }
+        (Value(lhs), Value(rhs)) => match (&lhs.inner, &rhs.inner) {
+            (ValueInner::Boolean(lhs), ValueInner::Boolean(rhs)) => lhs == rhs,
+            (ValueInner::Number(lhs), ValueInner::Number(rhs)) => lhs == rhs,
+            (ValueInner::String(lhs), ValueInner::String(rhs)) => lhs == rhs,
+            _ => {
+                todo!()
+            }
+        },
     };
 
     alloc(ValueT::Boolean(out))
@@ -32,14 +34,15 @@ pub extern "C" fn swcjs_bin_lt(lhs: *const ValueT, rhs: *const ValueT) -> *mut V
         (Null, Null) | (Undefined, Undefined) => false,
         (_, Undefined) | (Undefined, _) => false,
         (Null, _) | (_, Null) => todo!(),
-        (Value(ValueT::Boolean(true)), Value(ValueT::Boolean(false))) => false,
-        (Value(ValueT::Boolean(false)), Value(ValueT::Boolean(true))) => true,
-        (Value(ValueT::Number(lhs)), Value(ValueT::Number(rhs))) => lhs < rhs,
-        // TODO: javascript string less than
-        (Value(ValueT::String(lhs)), Value(ValueT::String(rhs))) => lhs < rhs,
-        (Value(_), Value(_)) => {
-            todo!()
-        }
+        (Value(lhs), Value(rhs)) => match (&lhs.inner, &rhs.inner) {
+            (ValueInner::Boolean(true), ValueInner::Boolean(false)) => false,
+            (ValueInner::Boolean(false), ValueInner::Boolean(true)) => true,
+            (ValueInner::Number(lhs), ValueInner::Number(rhs)) => lhs < rhs,
+            (ValueInner::String(lhs), ValueInner::String(rhs)) => lhs < rhs,
+            _ => {
+                todo!()
+            }
+        },
     };
 
     alloc(ValueT::Boolean(out))
@@ -60,16 +63,16 @@ pub extern "C" fn swcjs_bin_add(lhs: *const ValueT, rhs: *const ValueT) -> *mut 
     match (lhs, rhs) {
         (Undefined, _) | (_, Undefined) => alloc(ValueT::Number(f64::NAN)),
         (Null, _) | (_, Null) => todo!("javascript sucks"),
-        (Value(ValueT::Boolean(_lhs)), Value(ValueT::Boolean(_rhs))) => todo!(),
-        (Value(ValueT::Number(lhs)), Value(ValueT::Number(rhs))) => {
-            alloc(ValueT::Number(lhs + rhs))
-        }
-        (Value(ValueT::String(lhs)), Value(ValueT::String(rhs))) => {
-            alloc(ValueT::String(lhs.clone() + rhs))
-        }
-        (Value(_), Value(_)) => {
-            todo!()
-        }
+        (Value(lhs), Value(rhs)) => match (&lhs.inner, &rhs.inner) {
+            (ValueInner::Boolean(_lhs), ValueInner::Boolean(_rhs)) => todo!(),
+            (ValueInner::Number(lhs), ValueInner::Number(rhs)) => alloc(ValueT::Number(lhs + rhs)),
+            (ValueInner::String(lhs), ValueInner::String(rhs)) => {
+                alloc(ValueT::String(format!("{}{}", lhs, rhs)))
+            }
+            _ => {
+                todo!()
+            }
+        },
     }
 }
 
@@ -83,13 +86,13 @@ pub extern "C" fn swcjs_bin_sub(lhs: *const ValueT, rhs: *const ValueT) -> *mut 
     match (lhs, rhs) {
         (Undefined, _) | (_, Undefined) => alloc(ValueT::Number(f64::NAN)),
         (Null, _) | (_, Null) => todo!("javascript sucks"),
-        (Value(ValueT::Boolean(_lhs)), Value(ValueT::Boolean(_rhs))) => todo!(),
-        (Value(ValueT::Number(lhs)), Value(ValueT::Number(rhs))) => {
-            alloc(ValueT::Number(lhs - rhs))
-        }
-        (Value(ValueT::String(_lhs)), Value(ValueT::String(_rhs))) => todo!(),
-        (Value(_), Value(_)) => {
-            todo!()
-        }
+        (Value(lhs), Value(rhs)) => match (&lhs.inner, &rhs.inner) {
+            (ValueInner::Boolean(_lhs), ValueInner::Boolean(_rhs)) => todo!(),
+            (ValueInner::Number(lhs), ValueInner::Number(rhs)) => alloc(ValueT::Number(lhs - rhs)),
+            (ValueInner::String(_lhs), ValueInner::String(_rhs)) => todo!(),
+            _ => {
+                todo!()
+            }
+        },
     }
 }
