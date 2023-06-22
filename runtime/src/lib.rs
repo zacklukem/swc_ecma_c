@@ -96,7 +96,7 @@ impl<'a, T> From<*mut T> for Pointer<'a, T> {
 ///////
 
 #[no_mangle]
-pub static mut console: *mut ValueT = undefined_mut();
+pub static mut swcjs_global_console: *mut ValueT = undefined_mut();
 
 extern "C" fn console_log(args: &ArgsT) -> *mut ValueT {
     for (i, arg) in args.args.iter().cloned().enumerate() {
@@ -146,7 +146,7 @@ pub extern "C" fn swcjs_initialize() {
         .insert("log".to_string(), console_log);
 
     unsafe {
-        console = alloc(ValueT::Object(console_object));
+        swcjs_global_console = alloc(ValueT::Object(console_object));
     }
 }
 
