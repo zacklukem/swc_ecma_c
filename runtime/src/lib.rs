@@ -305,6 +305,38 @@ pub unsafe extern "C" fn swcjs_expr_call(
     }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn swcjs_expr_new(
+    fun: *const ValueT,
+    argc: u16,
+    mut args: ...
+) -> *mut ValueT {
+    let mut args_list: Vec<*mut ValueT> = vec![];
+    for _ in 0..argc {
+        args_list.push(args.arg())
+    }
+
+    let fun = Pointer::from(fun);
+
+    let new_this = alloc(ValueT::Object(Object::default()));
+
+    if let Pointer::Value(ValueT {
+        inner: ValueInner::Function(fun),
+        ..
+    }) = fun
+    {
+        (fun.pointer)(&ArgsT {
+            args: args_list,
+            capture: &fun.capture,
+            this: new_this,
+        });
+        new_this
+    } else {
+        // TODO: Throw TypeError
+        panic!("{:?} is not a function", fun);
+    }
+}
+
 extern "C" fn function_bind(args: &ArgsT) -> *mut ValueT {
     // TODO: handle no arg passed
     // TODO: handle more than 1 arg passed (currying)

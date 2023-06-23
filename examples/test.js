@@ -45,6 +45,16 @@ my_obj.c = "my obj has more props!";
 
 console.log(my_obj.c);
 
+function MyConstructor(input) {
+  this.a = "Something";
+  this.b = "something else";
+  this.input = input;
+}
+
+let my_obj2 = new MyConstructor("my input");
+
+console.log(my_obj2.input);
+
 console.log("Fib 8 rec:", fib_recursive(8));
 
 my_function();

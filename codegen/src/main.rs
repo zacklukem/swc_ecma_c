@@ -446,6 +446,18 @@ impl CodegenContext {
                 }
                 _ => todo!(),
             },
+            Expr::New(new) => {
+                write!(w, "{}(", internal_func!("expr_new"))?;
+                self.gen_expr(w, fun_top, &new.callee)?;
+                write!(w, ",{}", new.args.as_ref().map_or(0, Vec::len))?;
+                if let Some(args) = &new.args {
+                    for arg in args {
+                        write!(w, ",")?;
+                        self.gen_expr(w, fun_top, &arg.expr)?;
+                    }
+                }
+                write!(w, ")")?;
+            }
             Expr::Bin(bin) => {
                 let fun_name = match &bin.op {
                     BinaryOp::EqEq => internal_func!("bin_eqeq"),
