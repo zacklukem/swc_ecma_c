@@ -23,13 +23,17 @@ function run_test_case {
 
 function run_all_tests {
     for test in $tests; do
-        echo -e "\033[1;32m    Running test\033[0m $test"
+        printf "\033[1;32m    Running test\033[0m $test ... "
         file_prefix=${test%.test.js}
         if [ -z "$SWC_TEST_BLESS" ]; then
             run_test_case "$test" "_build/actual/$file_prefix.test.actual"
-            if ! diff "_build/actual/$file_prefix.test.actual" "expected/$file_prefix.test.expected"; then
-                echo -e "\033[1;31mTest $test failed!\033[0m"
+            if ! diff "expected/$file_prefix.test.expected" "_build/actual/$file_prefix.test.actual" > _build/temp.txt; then
+                echo -e "\033[1;31mFAILED\033[0m"
+                echo "    diff expected, actual:"
+                cat _build/temp.txt
                 exit 1
+            else
+                echo -e "\033[0;32mOK\033[0m"
             fi
         else
             run_test_case "$test" "expected/$file_prefix.test.expected"

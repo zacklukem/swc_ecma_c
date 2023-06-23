@@ -467,6 +467,27 @@ impl CodegenContext {
                 }
                 write!(w, ")")?;
             }
+            Expr::Bin(bin) if matches!(bin.op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) => {
+                let op = match &bin.op {
+                    BinaryOp::LogicalAnd => "&&",
+                    BinaryOp::LogicalOr => "||",
+                    _ => unreachable!(),
+                };
+                write!(
+                    w,
+                    "{lit_bool}({if_condition}(",
+                    lit_bool = internal_func!("lit_bool"),
+                    if_condition = internal_func!("if_condition")
+                )?;
+                self.gen_expr(w, fun_top, &bin.left)?;
+                write!(
+                    w,
+                    ") {op} {if_condition}(",
+                    if_condition = internal_func!("if_condition")
+                )?;
+                self.gen_expr(w, fun_top, &bin.right)?;
+                write!(w, "))")?;
+            }
             Expr::Bin(bin) => {
                 let fun_name = match &bin.op {
                     BinaryOp::EqEq => internal_func!("bin_eqeq"),
@@ -488,12 +509,12 @@ impl CodegenContext {
                     BinaryOp::BitOr => internal_func!("bin_bitor"),
                     BinaryOp::BitXor => internal_func!("bin_bitxor"),
                     BinaryOp::BitAnd => internal_func!("bin_bitand"),
-                    BinaryOp::LogicalOr => internal_func!("bin_logicalor"),
-                    BinaryOp::LogicalAnd => internal_func!("bin_logicaland"),
                     BinaryOp::In => internal_func!("bin_in"),
                     BinaryOp::InstanceOf => internal_func!("bin_instanceof"),
                     BinaryOp::Exp => internal_func!("bin_exp"),
                     BinaryOp::NullishCoalescing => internal_func!("bin_nullishcoalescing"),
+                    // Special case
+                    BinaryOp::LogicalOr | BinaryOp::LogicalAnd => unreachable!(),
                 };
                 write!(w, "{}(", fun_name)?;
                 self.gen_expr(w, fun_top, &bin.left)?;

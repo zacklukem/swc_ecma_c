@@ -34,22 +34,30 @@ pub enum ValueInner {
 }
 
 macro_rules! value_constructor {
-    ($name: ident, $inner_ty: ty) => {
+    ($as_name:ident, $name: ident, $inner_ty: ty) => {
         #[allow(non_snake_case)]
         pub fn $name(n: $inner_ty) -> Self {
             Self {
                 inner: ValueInner::$name(n),
             }
         }
+
+        pub fn $as_name(&self) -> Option<&$inner_ty> {
+            if let ValueInner::$name(n) = &self.inner {
+                Some(n)
+            } else {
+                None
+            }
+        }
     };
 }
 
 impl ValueT {
-    value_constructor!(Number, f64);
-    value_constructor!(String, String);
-    value_constructor!(Boolean, bool);
-    value_constructor!(Function, Function);
-    value_constructor!(Object, Object);
+    value_constructor!(as_number, Number, f64);
+    value_constructor!(as_string, String, String);
+    value_constructor!(as_boolean, Boolean, bool);
+    value_constructor!(as_function, Function, Function);
+    value_constructor!(as_object, Object, Object);
 }
 
 #[derive(Debug)]
@@ -289,7 +297,7 @@ pub extern "C" fn swcjs_args_nth(con: *const ArgsT, n: u16) -> *mut ValueT {
     debug_assert!(con != null());
     debug_assert!(con != undefined());
     let con = unsafe { &*con };
-    con.args[n as usize]
+    con.args.get(n as usize).cloned().unwrap_or(undefined_mut())
 }
 
 #[no_mangle]
