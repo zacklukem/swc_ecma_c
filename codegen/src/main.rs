@@ -301,6 +301,16 @@ impl CodegenContext {
         Ok(())
     }
 
+    fn init_globals(&mut self) {
+        self.declare("console", internal_global!("console").into());
+        self.declare("__swcjs__", internal_global!("__swcjs__").into());
+        self.declare("Object", internal_global!("Object").into());
+        self.declare("Number", internal_global!("Number").into());
+        self.declare("String", internal_global!("String").into());
+        self.declare("Function", internal_global!("Function").into());
+        self.declare("Boolean", internal_global!("Boolean").into());
+    }
+
     fn gen_module(
         source_file: Lrc<SourceFile>,
         w: &mut impl Write,
@@ -317,8 +327,7 @@ impl CodegenContext {
         };
 
         scope!(this, None, {
-            this.declare("console", internal_global!("console").into());
-            this.declare("__swcjs__", internal_global!("__swcjs__").into());
+            this.init_globals();
 
             for item in &module.body {
                 match item {

@@ -57,6 +57,10 @@ console.log(my_obj2.input);
 
 console.log("Fib 8 rec:", fib_recursive(8));
 
+let obj = new Object();
+obj.a = "constructed object";
+console.log(obj.a);
+
 my_function();
 let a;
 let b = 32;

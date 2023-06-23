@@ -11,6 +11,7 @@ use std::{
 
 pub mod binop;
 pub mod gc;
+pub mod global_constructors;
 
 pub struct ArgsT {
     pub args: Vec<*mut ValueT>,
@@ -51,9 +52,28 @@ impl ValueT {
     value_constructor!(Object, Object);
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Object {
+    pub constructor: *mut ValueT,
     pub properties: HashMap<String, *mut ValueT>,
+}
+
+impl Default for Object {
+    fn default() -> Self {
+        Self {
+            constructor: unsafe { global_constructors::swcjs_global_Object },
+            properties: HashMap::new(),
+        }
+    }
+}
+
+impl Object {
+    pub fn new(constructor: *mut ValueT) -> Self {
+        Self {
+            constructor,
+            properties: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -191,6 +211,8 @@ macro_rules! swcjs_object {
 #[no_mangle]
 pub extern "C" fn swcjs_initialize() {
     gc::init();
+
+    global_constructors::init();
 
     init_console();
     init_swcjs();
@@ -377,12 +399,24 @@ pub extern "C" fn swcjs_expr_member(val_raw: *mut ValueT, prop: *const c_char) -
                     capture: vec![val_raw],
                     this: undefined_mut(),
                 })),
-                _ => todo!(),
+                "constructor" => unsafe { global_constructors::swcjs_global_Function },
+                _ => undefined_mut(),
             },
-            _ => todo!(),
+            ValueInner::Number(_) => match prop.as_str() {
+                "constructor" => unsafe { global_constructors::swcjs_global_Number },
+                _ => undefined_mut(),
+            },
+            ValueInner::String(_) => match prop.as_str() {
+                "constructor" => unsafe { global_constructors::swcjs_global_String },
+                _ => undefined_mut(),
+            },
+            ValueInner::Boolean(_) => match prop.as_str() {
+                "constructor" => unsafe { global_constructors::swcjs_global_Boolean },
+                _ => undefined_mut(),
+            },
         }
     } else {
-        panic!("{:?} is not an object", val);
+        undefined_mut()
     }
 }
 
