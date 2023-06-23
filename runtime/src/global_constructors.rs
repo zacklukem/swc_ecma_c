@@ -1,4 +1,7 @@
-use crate::{gc, undefined_mut, ArgsT, Function, ValueT};
+use crate::{
+    alloc, gc, internal_function, undefined_mut, ArgsT, Function, Object, Pointer, ValueInner,
+    ValueT,
+};
 use std::ptr::NonNull;
 
 #[no_mangle]
@@ -41,6 +44,25 @@ extern "C" fn boolean_constructor(_args: &ArgsT) -> *mut ValueT {
     undefined_mut()
 }
 
+extern "C" fn object_create(args: &ArgsT) -> *mut ValueT {
+    let proto = Pointer::from(args.args[0]);
+
+    let mut new_obj = Object::default();
+
+    match proto {
+        Pointer::Null => todo!(),
+        Pointer::Value(ValueT {
+            inner: ValueInner::Object(proto),
+        }) => {
+            new_obj.properties = proto.properties.clone();
+        }
+        // TODO: exception
+        _ => panic!("Cannot create object with undefined prototype"),
+    }
+
+    alloc(ValueT::Object(new_obj))
+}
+
 pub fn init() {
     macro_rules! initialize_constructor {
         ($global: ident, $constructor: ident) => {
@@ -51,7 +73,12 @@ pub fn init() {
         };
     }
 
-    initialize_constructor!(swcjs_global_Object, object_constructor);
+    unsafe {
+        let mut fun = Function::internal(object_constructor);
+        fun.properties
+            .insert("create".to_string(), internal_function(object_create));
+        swcjs_global_Object = crate::alloc(ValueT::Function(fun));
+    }
     initialize_constructor!(swcjs_global_Number, number_constructor);
     initialize_constructor!(swcjs_global_String, string_constructor);
     initialize_constructor!(swcjs_global_Function, function_constructor);
