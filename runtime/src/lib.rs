@@ -5,6 +5,7 @@ use gc::alloc;
 use libc::c_char;
 use std::{
     collections::HashMap,
+    ffi::CStr,
     ptr::{null, null_mut, NonNull},
 };
 
@@ -13,6 +14,8 @@ pub mod gc;
 
 pub struct ArgsT {
     pub args: Vec<*mut ValueT>,
+    pub capture: &'static [*mut ValueT],
+    pub this: *mut ValueT,
 }
 
 #[derive(Debug)]
@@ -252,6 +255,14 @@ pub extern "C" fn swcjs_if_condition(con: *const ValueT) -> bool {
 }
 
 #[no_mangle]
+pub extern "C" fn swcjs_args_get_this(con: *const ArgsT) -> *mut ValueT {
+    debug_assert!(con != null());
+    debug_assert!(con != undefined());
+    let con = unsafe { &*con };
+    con.this
+}
+
+#[no_mangle]
 pub extern "C" fn swcjs_args_nth(con: *const ArgsT, n: u16) -> *mut ValueT {
     debug_assert!(con != null());
     debug_assert!(con != undefined());
@@ -283,15 +294,72 @@ pub unsafe extern "C" fn swcjs_expr_call(
         ..
     }) = fun
     {
-        (fun.pointer)(&ArgsT { args: args_list })
+        (fun.pointer)(&ArgsT {
+            args: args_list,
+            capture: &fun.capture,
+            this: fun.this,
+        })
     } else {
         // TODO: Throw TypeError
         panic!("{:?} is not a function", fun);
     }
 }
 
+extern "C" fn function_bind(args: &ArgsT) -> *mut ValueT {
+    // TODO: handle no arg passed
+    // TODO: handle more than 1 arg passed (currying)
+    let new_this = args.args[0];
+    let old_fun = Pointer::from(args.capture[0]);
+    if let Pointer::Value(ValueT {
+        inner: ValueInner::Function(old_fun),
+        ..
+    }) = old_fun
+    {
+        alloc(ValueT::Function(Function {
+            pointer: old_fun.pointer,
+            capture: old_fun.capture.clone(),
+            this: new_this,
+        }))
+    } else {
+        // Capture set by internal code
+        unreachable!("{:?} is not a function", old_fun);
+    }
+}
+
 #[no_mangle]
-pub extern "C" fn swcjs_expr_member(val: *mut ValueT, prop: *const c_char) -> *mut ValueT {
+pub extern "C" fn swcjs_expr_member(val_raw: *mut ValueT, prop: *const c_char) -> *mut ValueT {
+    let val = PointerMut::from(val_raw);
+    let prop = unsafe { std::ffi::CStr::from_ptr(prop) };
+    let prop = prop.to_string_lossy().to_string();
+
+    if let PointerMut::Value(ValueT { inner, .. }) = val {
+        match &inner {
+            ValueInner::Object(obj) => obj
+                .properties
+                .get(&prop)
+                .cloned()
+                .unwrap_or(undefined_mut()),
+            ValueInner::Function(_) => match prop.as_str() {
+                "bind" => alloc(ValueT::Function(Function {
+                    pointer: function_bind,
+                    capture: vec![val_raw],
+                    this: undefined_mut(),
+                })),
+                _ => todo!(),
+            },
+            _ => todo!(),
+        }
+    } else {
+        panic!("{:?} is not an object", val);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn swcjs_expr_set_member(
+    val: *mut ValueT,
+    prop: *const c_char,
+    new_value: *mut ValueT,
+) -> *mut ValueT {
     let val = PointerMut::from(val);
     let prop = unsafe { std::ffi::CStr::from_ptr(prop) };
     let prop = prop.to_string_lossy().to_string();
@@ -301,11 +369,23 @@ pub extern "C" fn swcjs_expr_member(val: *mut ValueT, prop: *const c_char) -> *m
         ..
     }) = val
     {
-        obj.properties
-            .get(&prop)
-            .cloned()
-            .unwrap_or(undefined_mut())
+        obj.properties.insert(prop, new_value);
+        new_value
     } else {
         panic!("{:?} is not an object", val);
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn swcjs_expr_init_obj(num_fields: u16, mut args: ...) -> *mut ValueT {
+    let mut obj = Object::default();
+
+    for _ in 0..num_fields {
+        // unsafe: gotta trust the generated code
+        let field_name = CStr::from_ptr(args.arg()).to_string_lossy();
+        let field_value: *mut ValueT = args.arg();
+        obj.properties.insert(field_name.to_string(), field_value);
+    }
+
+    alloc(ValueT::Object(obj))
 }

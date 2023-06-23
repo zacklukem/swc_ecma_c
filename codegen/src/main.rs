@@ -12,7 +12,7 @@ use swc_common::{
 use swc_common::{SourceFile, Span};
 use swc_ecma_ast::{
     BinaryOp, Callee, Decl, Expr, FnDecl, Lit, MemberProp, Module, ModuleItem, Pat, PatOrExpr,
-    Stmt, VarDecl, VarDeclOrExpr,
+    Prop, PropName, PropOrSpread, Stmt, VarDecl, VarDeclOrExpr,
 };
 use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax};
 
@@ -259,6 +259,12 @@ impl CodegenContext {
                 }
             }
 
+            writeln!(
+                &mut buffers.fun_impl,
+                "{VALUE_TYPE} __this__ = {args_get_this}(__args__);",
+                args_get_this = internal_func!("args_get_this")
+            )?;
+
             if let Some(body) = &fun_decl.function.body {
                 scope!(self, Some(&mut buffers.fun_impl), {
                     for stmt in &body.stmts {
@@ -370,6 +376,7 @@ impl CodegenContext {
         expr: &Expr,
     ) -> Result<(), CodegenError> {
         match expr {
+            Expr::This(_) => write!(w, "__this__")?,
             Expr::Lit(Lit::Str(s)) => write!(w, "{}(\"{}\")", internal_func!("lit_str"), s.value)?,
             Expr::Lit(Lit::Null(_s)) => write!(w, "{NULL}")?,
             Expr::Lit(Lit::Num(n)) => write!(w, "{}({})", internal_func!("lit_num"), n.value)?,
@@ -404,7 +411,26 @@ impl CodegenContext {
                         self.gen_expr(w, fun_top, &assign.right)?;
                         write!(w, ")")?;
                     }
-                    _ => todo!(),
+                    Pat::Expr(expr) => match expr.as_ref() {
+                        Expr::Member(member) => {
+                            write!(
+                                w,
+                                "{expr_set_member}(",
+                                expr_set_member = internal_func!("expr_set_member")
+                            )?;
+                            self.gen_expr(w, fun_top, &member.obj)?;
+                            write!(w, ",")?;
+                            match &member.prop {
+                                MemberProp::Ident(id) => write!(w, "\"{}\"", id.sym)?,
+                                _ => todo!(),
+                            }
+                            write!(w, ",")?;
+                            self.gen_expr(w, fun_top, &assign.right)?;
+                            write!(w, ")")?;
+                        }
+                        _ => todo!(),
+                    },
+                    p => todo!("{:?}", p),
                 },
             },
             Expr::Call(call) => match &call.callee {
@@ -461,6 +487,22 @@ impl CodegenContext {
                 match &member.prop {
                     MemberProp::Ident(id) => write!(w, "\"{}\"", id.sym)?,
                     _ => todo!(),
+                }
+                write!(w, ")")?;
+            }
+            Expr::Object(obj) => {
+                write!(w, "{}({}", internal_func!("expr_init_obj"), obj.props.len())?;
+                for prop in &obj.props {
+                    if let PropOrSpread::Prop(prop) = prop {
+                        if let Prop::KeyValue(prop) = prop.as_ref() {
+                            write!(w, ",\"{}\",", prop_name_to_string(&prop.key))?;
+                            self.gen_expr(w, fun_top, &prop.value)?;
+                        } else {
+                            todo!();
+                        }
+                    } else {
+                        todo!();
+                    }
                 }
                 write!(w, ")")?;
             }
@@ -532,7 +574,7 @@ impl CodegenContext {
                 write!(w, ";\n")?;
             }
             Stmt::Return(ret_stmt) => {
-                // TODO: save return value to previous stack?
+                // TODO: save return value to previous stack for gc
                 writeln!(
                     w,
                     "{gc_end_frame}();",
@@ -579,5 +621,15 @@ impl CodegenContext {
                 todo!()
             }
         })
+    }
+}
+
+fn prop_name_to_string(prop: &PropName) -> Cow<'_, str> {
+    match prop {
+        PropName::Ident(id) => Cow::Borrowed(&id.sym),
+        PropName::Str(s) => Cow::Borrowed(&s.value),
+        PropName::Num(n) => n.value.to_string().into(),
+        PropName::BigInt(n) => n.value.to_string().into(),
+        PropName::Computed(_) => todo!(),
     }
 }

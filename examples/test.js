@@ -1,5 +1,13 @@
-let drop_me = "drop me";
-drop_me = "bye";
+function dont_drop() {
+  return "dont drop me";
+}
+
+let drop_me = {
+  a: "drop me a",
+  b: "drop me b",
+};
+
+drop_me = dont_drop();
 
 __swcjs__.gc();
 
@@ -15,6 +23,27 @@ function fib_recursive(n) {
     return fib_recursive(n - 1) + fib_recursive(n - 2);
   }
 }
+
+function print_this() {
+  console.log(this);
+}
+
+print_this.bind("Printing this!")();
+
+let my_obj = {
+  a: "my object has props!",
+  b: 2,
+};
+
+console.log(my_obj.a);
+
+my_obj.b = "my props change!";
+
+console.log(my_obj.b);
+
+my_obj.c = "my obj has more props!";
+
+console.log(my_obj.c);
 
 console.log("Fib 8 rec:", fib_recursive(8));
 
