@@ -139,7 +139,7 @@ impl GcState {
 
         let objects = gc.objects.get_mut().unwrap();
         for obj in objects.extract_if(|v| !self.marked.contains(v)) {
-            println!("GC: Dropping {:?}", &*obj);
+            println!("GC: Dropping");
             unsafe {
                 drop(Box::from_raw(obj.v));
             }
