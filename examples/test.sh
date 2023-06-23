@@ -17,7 +17,7 @@ function build_rust {
 function run_test_case {
     file_prefix=${1%.test.js}
     ../target/debug/codegen $1 > _build/$file_prefix.test.c
-	gcc -I../runtime/include ../target/debug/libruntime.a _build/$file_prefix.test.c -o _build/$file_prefix.test
+	gcc -g -I../runtime/include ../target/debug/libruntime.a _build/$file_prefix.test.c -o _build/$file_prefix.test
     if [ -z "$2" ]; then
         _build/$file_prefix.test
     else

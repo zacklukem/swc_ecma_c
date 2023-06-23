@@ -352,6 +352,13 @@ pub extern "C" fn swcjs_init_global_fn(fun: extern "C" fn(&ArgsT) -> *mut ValueT
 }
 
 #[no_mangle]
+pub extern "C" fn swcjs_init_anon_fn(fun: extern "C" fn(&ArgsT) -> *mut ValueT) -> *mut ValueT {
+    // TODO: capture this from module
+    // TODO: closure
+    alloc(ValueT::Function(Function::internal(fun)))
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn swcjs_expr_call(
     fun: *const ValueT,
     argc: u16,
@@ -381,19 +388,16 @@ pub unsafe extern "C" fn swcjs_expr_call(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn swcjs_expr_new(
-    fun: *const ValueT,
-    argc: u16,
-    mut args: ...
-) -> *mut ValueT {
+pub unsafe extern "C" fn swcjs_expr_new(fun: *mut ValueT, argc: u16, mut args: ...) -> *mut ValueT {
     let mut args_list: Vec<*mut ValueT> = vec![];
     for _ in 0..argc {
         args_list.push(args.arg())
     }
 
+    let object = Object::new(fun);
     let fun = Pointer::from(fun);
 
-    let new_this = alloc(ValueT::Object(Object::default()));
+    let new_this = alloc(ValueT::Object(object));
 
     if let Pointer::Value(ValueT {
         inner: ValueInner::Function(fun),
@@ -437,18 +441,42 @@ extern "C" fn function_bind(args: &ArgsT) -> *mut ValueT {
 }
 
 #[no_mangle]
-pub extern "C" fn swcjs_expr_member(val_raw: *mut ValueT, prop: *const c_char) -> *mut ValueT {
+pub extern "C" fn swcjs_expr_member(val_raw: *mut ValueT, prop_raw: *const c_char) -> *mut ValueT {
     let val = PointerMut::from(val_raw);
-    let prop = unsafe { std::ffi::CStr::from_ptr(prop) };
+    let prop = unsafe { std::ffi::CStr::from_ptr(prop_raw) };
     let prop = prop.to_string_lossy().to_string();
 
     if let PointerMut::Value(ValueT { inner, .. }) = val {
         match &inner {
-            ValueInner::Object(obj) => obj
-                .properties
-                .get(&prop)
-                .cloned()
-                .unwrap_or(undefined_mut()),
+            ValueInner::Object(obj) => {
+                if let Some(prop) = obj.properties.get(&prop).cloned() {
+                    prop
+                } else {
+                    if let Some(constructor) = Pointer::from(obj.constructor)
+                        .as_value()
+                        .and_then(|val| val.as_function())
+                    {
+                        let member_raw = swcjs_expr_member(constructor.prototype, prop_raw);
+                        if let Pointer::Value(ValueT {
+                            inner: ValueInner::Function(fun),
+                        }) = Pointer::from(member_raw)
+                        {
+                            alloc(ValueT::Function(Function {
+                                properties: fun.properties.clone(),
+                                // TODO: is this right?
+                                prototype: undefined_mut(),
+                                pointer: fun.pointer,
+                                capture: fun.capture.clone(),
+                                this: val_raw,
+                            }))
+                        } else {
+                            undefined_mut()
+                        }
+                    } else {
+                        undefined_mut()
+                    }
+                }
+            }
             ValueInner::Function(fun) => match prop.as_str() {
                 "bind" => alloc(ValueT::Function(Function {
                     properties: HashMap::new(),
@@ -458,7 +486,7 @@ pub extern "C" fn swcjs_expr_member(val_raw: *mut ValueT, prop: *const c_char) -
                     this: undefined_mut(),
                 })),
                 "constructor" => unsafe { global_constructors::swcjs_global_Function },
-                "prototype" => unsafe { global_constructors::swcjs_global_Function },
+                "prototype" => fun.prototype,
                 prop => fun.properties.get(prop).cloned().unwrap_or(undefined_mut()),
             },
             ValueInner::Number(_) => match prop.as_str() {

@@ -11,8 +11,8 @@ use swc_common::{
 };
 use swc_common::{SourceFile, Span};
 use swc_ecma_ast::{
-    BinaryOp, Callee, Decl, Expr, FnDecl, Lit, MemberProp, Module, ModuleItem, Pat, PatOrExpr,
-    Prop, PropName, PropOrSpread, Stmt, VarDecl, VarDeclOrExpr,
+    BinaryOp, Callee, Decl, Expr, FnDecl, Function, Lit, MemberProp, Module, ModuleItem, Pat,
+    PatOrExpr, Prop, PropName, PropOrSpread, Stmt, VarDecl, VarDeclOrExpr,
 };
 use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax};
 
@@ -66,6 +66,7 @@ struct CodegenContext {
     _source_file: Lrc<SourceFile>,
     filename_prefix: String,
     varname_counter: usize,
+    annon_fn_counter: usize,
 }
 
 #[derive(Debug)]
@@ -147,8 +148,6 @@ struct CodegenBuffers {
     pub header: BufWriter<Vec<u8>>,
     pub fun_impl: BufWriter<Vec<u8>>,
     pub mod_init_fun: BufWriter<Vec<u8>>,
-    pub main_fun_top: BufWriter<Vec<u8>>,
-    pub main_fun: BufWriter<Vec<u8>>,
 }
 
 impl CodegenContext {
@@ -159,6 +158,7 @@ impl CodegenContext {
             _source_file: source_file,
             filename_prefix,
             varname_counter: 0,
+            annon_fn_counter: 0,
         }
     }
 
@@ -199,6 +199,15 @@ impl CodegenContext {
         }
     }
 
+    fn get_anonymous_fn_name(&mut self) -> String {
+        let name = format!(
+            "__{}_anon_fn_{}",
+            self.filename_prefix, self.annon_fn_counter
+        );
+        self.annon_fn_counter += 1;
+        name
+    }
+
     fn enter_scope(&mut self) {
         self.scope_stack.push(Scope {
             varmap: HashMap::new(),
@@ -214,26 +223,25 @@ impl CodegenContext {
         }
     }
 
-    fn gen_top_level_function(
+    fn gen_function_body(
         &mut self,
-        fun_decl: &FnDecl,
+        fun_name: &str,
         buffers: &mut CodegenBuffers,
+        function: &Function,
     ) -> Result<(), CodegenError> {
-        let fun_name = self.declare_new(&fun_decl.ident.sym);
         let mut fun_top = BufWriter::new(Vec::new());
         let mut fun_body = BufWriter::new(Vec::new());
+
         writeln!(
             &mut buffers.header,
-            "static {VALUE_TYPE} {fun_name}_impl(const {ARGS_TYPE} __args__);"
+            "static {VALUE_TYPE} {fun_name}(const {ARGS_TYPE} __args__);"
         )?;
-        writeln!(
-            &mut buffers.header,
-            "{VALUE_TYPE} {fun_name} = {UNDEFINED};"
-        )?;
+
         writeln!(
             &mut buffers.fun_impl,
-            "static {VALUE_TYPE} {fun_name}_impl(const {ARGS_TYPE} __args__) {{",
+            "static {VALUE_TYPE} {fun_name}(const {ARGS_TYPE} __args__) {{",
         )?;
+
         writeln!(
             &mut buffers.fun_impl,
             "{gc_begin_frame}();",
@@ -241,7 +249,7 @@ impl CodegenContext {
         )?;
 
         scope!(self, None, {
-            for (i, param) in fun_decl.function.params.iter().enumerate() {
+            for (i, param) in function.params.iter().enumerate() {
                 if let Pat::Ident(id) = &param.pat {
                     let sym_name = self.declare_new(&id.sym);
                     writeln!(
@@ -265,10 +273,10 @@ impl CodegenContext {
                 args_get_this = internal_func!("args_get_this")
             )?;
 
-            if let Some(body) = &fun_decl.function.body {
+            if let Some(body) = &function.body {
                 scope!(self, Some(&mut buffers.fun_impl), {
                     for stmt in &body.stmts {
-                        self.gen_stmt(&mut fun_body, &mut fun_top, stmt)?;
+                        self.gen_stmt(&mut fun_body, buffers, &mut fun_top, stmt)?;
                     }
                     writeln!(&mut buffers.fun_impl, "{{")?;
                     buffers
@@ -288,6 +296,22 @@ impl CodegenContext {
             writeln!(&mut buffers.fun_impl, "return {UNDEFINED};")?;
         });
         writeln!(&mut buffers.fun_impl, "}}")?;
+        Ok(())
+    }
+
+    fn gen_top_level_function(
+        &mut self,
+        fun_decl: &FnDecl,
+        buffers: &mut CodegenBuffers,
+    ) -> Result<(), CodegenError> {
+        let fun_name = self.declare_new(&fun_decl.ident.sym);
+        self.gen_function_body(&format!("{fun_name}_impl"), buffers, &fun_decl.function)?;
+
+        writeln!(
+            &mut buffers.header,
+            "{VALUE_TYPE} {fun_name} = {UNDEFINED};"
+        )?;
+
         writeln!(
             &mut buffers.mod_init_fun,
             "{fun_name} = {init_global_fn}({fun_name}_impl);",
@@ -318,13 +342,13 @@ impl CodegenContext {
         module: &Module,
     ) -> Result<(), CodegenError> {
         let mut this = CodegenContext::new(source_file);
+        let mut main_fun_top = BufWriter::new(Vec::new());
+        let mut main_fun = BufWriter::new(Vec::new());
 
         let mut buffers = CodegenBuffers {
             header: BufWriter::new(Vec::new()),
             fun_impl: BufWriter::new(Vec::new()),
             mod_init_fun: BufWriter::new(Vec::new()),
-            main_fun_top: BufWriter::new(Vec::new()),
-            main_fun: BufWriter::new(Vec::new()),
         };
 
         scope!(this, None, {
@@ -336,7 +360,7 @@ impl CodegenContext {
                         this.gen_top_level_function(fun_decl, &mut buffers)?;
                     }
                     ModuleItem::Stmt(stmt) => {
-                        this.gen_stmt(&mut buffers.main_fun, &mut buffers.main_fun_top, stmt)?;
+                        this.gen_stmt(&mut main_fun, &mut buffers, &mut main_fun_top, stmt)?;
                     }
                     _ => {
                         todo!()
@@ -365,8 +389,8 @@ impl CodegenContext {
         )?;
         writeln!(w, "{}__swcjs_mod_init__();", this.filename_prefix)?;
         writeln!(w, "{{")?;
-        w.write_all(buffers.main_fun_top.into_inner().unwrap().as_slice())?;
-        w.write_all(buffers.main_fun.into_inner().unwrap().as_slice())?;
+        w.write_all(main_fun_top.into_inner().unwrap().as_slice())?;
+        w.write_all(main_fun.into_inner().unwrap().as_slice())?;
         writeln!(w, "}}")?;
         writeln!(
             w,
@@ -382,6 +406,7 @@ impl CodegenContext {
     fn gen_expr(
         &mut self,
         w: &mut impl Write,
+        buffers: &mut CodegenBuffers,
         fun_top: &mut impl Write,
         expr: &Expr,
     ) -> Result<(), CodegenError> {
@@ -418,7 +443,7 @@ impl CodegenContext {
                             .ok_or_else(|| CodegenError::InvalidIdentifier(i.span))?;
                         write!(w, "{ident}")?;
                         write!(w, " = ")?;
-                        self.gen_expr(w, fun_top, &assign.right)?;
+                        self.gen_expr(w, buffers, fun_top, &assign.right)?;
                         write!(w, ")")?;
                     }
                     Pat::Expr(expr) => match expr.as_ref() {
@@ -428,14 +453,14 @@ impl CodegenContext {
                                 "{expr_set_member}(",
                                 expr_set_member = internal_func!("expr_set_member")
                             )?;
-                            self.gen_expr(w, fun_top, &member.obj)?;
+                            self.gen_expr(w, buffers, fun_top, &member.obj)?;
                             write!(w, ",")?;
                             match &member.prop {
                                 MemberProp::Ident(id) => write!(w, "\"{}\"", id.sym)?,
                                 _ => todo!(),
                             }
                             write!(w, ",")?;
-                            self.gen_expr(w, fun_top, &assign.right)?;
+                            self.gen_expr(w, buffers, fun_top, &assign.right)?;
                             write!(w, ")")?;
                         }
                         _ => todo!(),
@@ -446,11 +471,11 @@ impl CodegenContext {
             Expr::Call(call) => match &call.callee {
                 Callee::Expr(expr) => {
                     write!(w, "{}(", internal_func!("expr_call"))?;
-                    self.gen_expr(w, fun_top, expr)?;
+                    self.gen_expr(w, buffers, fun_top, expr)?;
                     write!(w, ",{}", call.args.len())?;
                     for arg in &call.args {
                         write!(w, ",")?;
-                        self.gen_expr(w, fun_top, &arg.expr)?;
+                        self.gen_expr(w, buffers, fun_top, &arg.expr)?;
                     }
                     write!(w, ")")?;
                 }
@@ -458,12 +483,12 @@ impl CodegenContext {
             },
             Expr::New(new) => {
                 write!(w, "{}(", internal_func!("expr_new"))?;
-                self.gen_expr(w, fun_top, &new.callee)?;
+                self.gen_expr(w, buffers, fun_top, &new.callee)?;
                 write!(w, ",{}", new.args.as_ref().map_or(0, Vec::len))?;
                 if let Some(args) = &new.args {
                     for arg in args {
                         write!(w, ",")?;
-                        self.gen_expr(w, fun_top, &arg.expr)?;
+                        self.gen_expr(w, buffers, fun_top, &arg.expr)?;
                     }
                 }
                 write!(w, ")")?;
@@ -480,13 +505,13 @@ impl CodegenContext {
                     lit_bool = internal_func!("lit_bool"),
                     if_condition = internal_func!("if_condition")
                 )?;
-                self.gen_expr(w, fun_top, &bin.left)?;
+                self.gen_expr(w, buffers, fun_top, &bin.left)?;
                 write!(
                     w,
                     ") {op} {if_condition}(",
                     if_condition = internal_func!("if_condition")
                 )?;
-                self.gen_expr(w, fun_top, &bin.right)?;
+                self.gen_expr(w, buffers, fun_top, &bin.right)?;
                 write!(w, "))")?;
             }
             Expr::Bin(bin) => {
@@ -518,14 +543,14 @@ impl CodegenContext {
                     BinaryOp::LogicalOr | BinaryOp::LogicalAnd => unreachable!(),
                 };
                 write!(w, "{}(", fun_name)?;
-                self.gen_expr(w, fun_top, &bin.left)?;
+                self.gen_expr(w, buffers, fun_top, &bin.left)?;
                 write!(w, ",")?;
-                self.gen_expr(w, fun_top, &bin.right)?;
+                self.gen_expr(w, buffers, fun_top, &bin.right)?;
                 write!(w, ")")?;
             }
             Expr::Member(member) => {
                 write!(w, "{}(", internal_func!("expr_member"))?;
-                self.gen_expr(w, fun_top, &member.obj)?;
+                self.gen_expr(w, buffers, fun_top, &member.obj)?;
                 write!(w, ",")?;
                 match &member.prop {
                     MemberProp::Ident(id) => write!(w, "\"{}\"", id.sym)?,
@@ -539,7 +564,7 @@ impl CodegenContext {
                     if let PropOrSpread::Prop(prop) = prop {
                         if let Prop::KeyValue(prop) = prop.as_ref() {
                             write!(w, ",\"{}\",", prop_name_to_string(&prop.key))?;
-                            self.gen_expr(w, fun_top, &prop.value)?;
+                            self.gen_expr(w, buffers, fun_top, &prop.value)?;
                         } else {
                             todo!();
                         }
@@ -549,6 +574,20 @@ impl CodegenContext {
                 }
                 write!(w, ")")?;
             }
+            Expr::Fn(fn_expr) => {
+                // todo: handle ident
+                // todo: handle closure
+
+                let fun_name = self.get_anonymous_fn_name();
+
+                self.gen_function_body(&fun_name, buffers, &fn_expr.function)?;
+
+                write!(
+                    w,
+                    "{init_anon_fn}({fun_name})",
+                    init_anon_fn = internal_func!("init_anon_fn")
+                )?;
+            }
             t => todo!("{:?}", t),
         }
         Ok(())
@@ -557,54 +596,55 @@ impl CodegenContext {
     fn gen_stmt(
         &mut self,
         w: &mut impl Write,
+        buffers: &mut CodegenBuffers,
         fun_top: &mut impl Write,
         stmt: &Stmt,
     ) -> Result<(), CodegenError> {
         match stmt {
             Stmt::If(stmt) => {
                 write!(w, "if ({}(", internal_func!("if_condition"))?;
-                self.gen_expr(w, fun_top, &stmt.test)?;
+                self.gen_expr(w, buffers, fun_top, &stmt.test)?;
                 write!(w, ")) ")?;
-                self.gen_stmt(w, fun_top, &stmt.cons)?;
+                self.gen_stmt(w, buffers, fun_top, &stmt.cons)?;
                 if let Some(alt) = &stmt.alt {
                     write!(w, "else\n")?;
-                    self.gen_stmt(w, fun_top, alt)?;
+                    self.gen_stmt(w, buffers, fun_top, alt)?;
                 }
             }
             Stmt::While(stmt) => {
                 write!(w, "while ({}(", internal_func!("if_condition"))?;
-                self.gen_expr(w, fun_top, &stmt.test)?;
+                self.gen_expr(w, buffers, fun_top, &stmt.test)?;
                 write!(w, ")) ")?;
-                self.gen_stmt(w, fun_top, &stmt.body)?;
+                self.gen_stmt(w, buffers, fun_top, &stmt.body)?;
             }
             Stmt::Decl(Decl::Var(var)) => {
-                self.gen_vardecl(w, fun_top, var)?;
+                self.gen_vardecl(w, buffers, fun_top, var)?;
             }
             Stmt::Block(stmt) => {
                 scope!(self, Some(w), {
                     write!(w, "{{\n")?;
                     for stmt in &stmt.stmts {
-                        self.gen_stmt(w, fun_top, stmt)?;
+                        self.gen_stmt(w, buffers, fun_top, stmt)?;
                     }
                 });
                 write!(w, "}}\n")?;
             }
             Stmt::For(for_stmt) => {
                 match &for_stmt.init {
-                    Some(VarDeclOrExpr::Expr(e)) => self.gen_expr(w, fun_top, e)?,
-                    Some(VarDeclOrExpr::VarDecl(v)) => self.gen_vardecl(w, fun_top, v)?,
+                    Some(VarDeclOrExpr::Expr(e)) => self.gen_expr(w, buffers, fun_top, e)?,
+                    Some(VarDeclOrExpr::VarDecl(v)) => self.gen_vardecl(w, buffers, fun_top, v)?,
                     None => (),
                 }
                 write!(w, "while ({}(", internal_func!("if_condition"))?;
                 if let Some(test) = &for_stmt.test {
-                    self.gen_expr(w, fun_top, test)?;
+                    self.gen_expr(w, buffers, fun_top, test)?;
                 } else {
                     write!(w, "1")?;
                 }
                 writeln!(w, ")) {{")?;
-                self.gen_stmt(w, fun_top, &for_stmt.body)?;
+                self.gen_stmt(w, buffers, fun_top, &for_stmt.body)?;
                 if let Some(update) = &for_stmt.update {
-                    self.gen_expr(w, fun_top, update)?;
+                    self.gen_expr(w, buffers, fun_top, update)?;
                     writeln!(w, ";")?;
                 }
                 writeln!(w, "}}")?;
@@ -613,7 +653,7 @@ impl CodegenContext {
             }
 
             Stmt::Expr(expr_stmt) => {
-                self.gen_expr(w, fun_top, &expr_stmt.expr)?;
+                self.gen_expr(w, buffers, fun_top, &expr_stmt.expr)?;
                 write!(w, ";\n")?;
             }
             Stmt::Return(ret_stmt) => {
@@ -625,7 +665,7 @@ impl CodegenContext {
                 )?;
                 write!(w, "return ")?;
                 if let Some(expr) = &ret_stmt.arg {
-                    self.gen_expr(w, fun_top, expr)?;
+                    self.gen_expr(w, buffers, fun_top, expr)?;
                 } else {
                     write!(w, "{UNDEFINED}")?;
                 }
@@ -641,6 +681,7 @@ impl CodegenContext {
     fn gen_vardecl(
         &mut self,
         w: &mut impl Write,
+        buffers: &mut CodegenBuffers,
         fun_top: &mut impl Write,
         var: &VarDecl,
     ) -> Result<(), CodegenError> {
@@ -657,7 +698,7 @@ impl CodegenContext {
 
                 if let Some(init) = &decl.init {
                     write!(w, "{} = ", ident)?;
-                    self.gen_expr(w, fun_top, init)?;
+                    self.gen_expr(w, buffers, fun_top, init)?;
                 }
                 writeln!(w, ";")?;
             } else {
