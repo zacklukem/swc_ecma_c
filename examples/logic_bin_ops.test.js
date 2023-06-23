@@ -1,6 +1,7 @@
 function fail_inner(v) {
   console.log("FAIL", this.fail);
   this.fail = this.fail + 1;
+  console.assert(false, "FAIL INNER");
   return v;
 }
 

@@ -309,6 +309,7 @@ impl CodegenContext {
         self.declare("String", internal_global!("String").into());
         self.declare("Function", internal_global!("Function").into());
         self.declare("Boolean", internal_global!("Boolean").into());
+        self.declare("assert", internal_global!("assert").into());
     }
 
     fn gen_module(

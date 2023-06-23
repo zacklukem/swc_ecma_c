@@ -7,9 +7,10 @@ use std::{
     hash::{Hash, Hasher},
     ops::{Deref, DerefMut},
     ptr::{null_mut, NonNull},
+    sync::atomic::AtomicBool,
 };
 
-use crate::{undefined_mut, ArgsT, ValueInner, ValueT};
+use crate::{undefined_mut, ArgsT, Pointer, ValueInner, ValueT};
 
 struct StackFrame {
     vars: Vec<NonNull<*mut ValueT>>,
@@ -20,6 +21,8 @@ struct Gc {
     stack_frames: Vec<StackFrame>,
     objects: OnceCell<HashSet<HeapValue>>,
 }
+
+static ENABLE_LOGGING: AtomicBool = AtomicBool::new(false);
 
 static mut GC: Mutex<Gc> = Mutex::new(Gc {
     statics: vec![],
@@ -139,10 +142,18 @@ impl GcState {
 
         let objects = gc.objects.get_mut().unwrap();
         for obj in objects.extract_if(|v| !self.marked.contains(v)) {
-            println!("GC: Dropping");
+            if ENABLE_LOGGING.load(std::sync::atomic::Ordering::Relaxed) {
+                println!("GC: Dropping");
+            }
             unsafe {
                 drop(Box::from_raw(obj.v));
             }
+        }
+    }
+
+    fn mark_all(&mut self, values: impl Iterator<Item = impl Deref<Target = *mut ValueT>>) {
+        for value in values {
+            self.mark(*value.deref());
         }
     }
 
@@ -156,10 +167,16 @@ impl GcState {
 
             match &value.inner {
                 ValueInner::Object(obj) => {
-                    for v in obj.properties.values() {
-                        self.mark(*v);
-                    }
+                    self.mark(obj.constructor);
+                    self.mark_all(obj.properties.values());
                 }
+                ValueInner::Function(func) => {
+                    self.mark(func.this);
+                    self.mark(func.prototype);
+                    self.mark_all(func.capture.iter());
+                    self.mark_all(func.properties.values());
+                }
+
                 _ => {}
             }
         }
@@ -176,5 +193,76 @@ pub fn run_gc() {
 
 pub(crate) extern "C" fn swcjs_gc(_args: &ArgsT) -> *mut ValueT {
     run_gc();
+    undefined_mut()
+}
+
+pub(crate) extern "C" fn swcjs_gc_enable_logging(_args: &ArgsT) -> *mut ValueT {
+    ENABLE_LOGGING.store(true, std::sync::atomic::Ordering::Relaxed);
+    undefined_mut()
+}
+
+pub(crate) extern "C" fn swcjs_gc_disable_logging(_args: &ArgsT) -> *mut ValueT {
+    ENABLE_LOGGING.store(false, std::sync::atomic::Ordering::Relaxed);
+    undefined_mut()
+}
+
+pub(crate) extern "C" fn swcjs_gc_store_ptr(_args: &ArgsT) -> *mut ValueT {
+    let pointer = _args.args[0] as usize;
+
+    crate::swcjs_object! {
+        // TODO: use bigint
+        "ptr": alloc(ValueT::String(format!("{}", pointer)))
+    }
+}
+
+pub(crate) extern "C" fn swcjs_gc_assert_saved(_args: &ArgsT) -> *mut ValueT {
+    let pointer = Pointer::from(_args.args[0])
+        .as_value()
+        .expect("Expected value")
+        .as_object()
+        .expect("Expected object");
+
+    let ptr = Pointer::from(*pointer.properties.get("ptr").expect("Expected ptr field"))
+        .as_value()
+        .expect("Expected ptr field not undefined")
+        .as_string()
+        .expect("Expected ptr field string");
+    let ptr_usize = ptr
+        .parse::<usize>()
+        .expect("Expected ptr field to be a number");
+    let ptr = HeapValue::new(ptr_usize as *mut ValueT).unwrap();
+    unsafe {
+        assert!(
+            GC.lock().objects.get_mut().unwrap().contains(&ptr),
+            "{ptr_usize} is not saved!"
+        );
+    }
+
+    undefined_mut()
+}
+
+pub(crate) extern "C" fn swcjs_gc_assert_freed(_args: &ArgsT) -> *mut ValueT {
+    let pointer = Pointer::from(_args.args[0])
+        .as_value()
+        .expect("Expected value")
+        .as_object()
+        .expect("Expected object");
+
+    let ptr = Pointer::from(*pointer.properties.get("ptr").expect("Expected ptr field"))
+        .as_value()
+        .expect("Expected ptr field not undefined")
+        .as_string()
+        .expect("Expected ptr field string");
+    let ptr_usize = ptr
+        .parse::<usize>()
+        .expect("Expected ptr field to be a number");
+    let ptr = HeapValue::new(ptr_usize as *mut ValueT).unwrap();
+    unsafe {
+        assert!(
+            !GC.lock().objects.get_mut().unwrap().contains(&ptr),
+            "{ptr_usize} is not freed!"
+        );
+    }
+
     undefined_mut()
 }

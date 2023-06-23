@@ -1,3 +1,4 @@
+__swcjs__.gc_enable_logging();
 function dont_drop() {
   return "dont drop me";
 }
@@ -10,6 +11,7 @@ let drop_me = {
 drop_me = dont_drop();
 
 __swcjs__.gc();
+__swcjs__.gc_disable_logging();
 
 function my_function() {
   let words = "hello world";
@@ -87,3 +89,5 @@ for (let i = 0; i < 20; i = i + 1) {
   v2 = v1 + v2;
   v1 = temp;
 }
+
+console.assert(1 + 1 == 2, "math stuff");

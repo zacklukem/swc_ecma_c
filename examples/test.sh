@@ -18,7 +18,11 @@ function run_test_case {
     file_prefix=${1%.test.js}
     ../target/debug/codegen $1 > _build/$file_prefix.test.c
 	gcc -I../runtime/include ../target/debug/libruntime.a _build/$file_prefix.test.c -o _build/$file_prefix.test
-    _build/$file_prefix.test > $2
+    if [ -z "$2" ]; then
+        _build/$file_prefix.test
+    else
+        _build/$file_prefix.test > $2
+    fi
 }
 
 function run_all_tests {
@@ -36,6 +40,7 @@ function run_all_tests {
                 echo -e "\033[0;32mOK\033[0m"
             fi
         else
+            echo -e "\033[0;33mBLESSED\033[0m"
             run_test_case "$test" "expected/$file_prefix.test.expected"
         fi
     done
@@ -55,6 +60,16 @@ function main {
         "clean")
             print_step "Cleaning Test Files"
             rm -rf _build
+            exit 0
+            ;;
+        "run")
+            init
+
+            print_step "Building Compiler and Runtime"
+            build_rust
+
+            print_step "Running $2"
+            run_test_case "$2"
             exit 0
             ;;
         "bless")

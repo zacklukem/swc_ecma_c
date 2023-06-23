@@ -12,6 +12,7 @@ use std::{
 pub mod binop;
 pub mod gc;
 pub mod global_constructors;
+pub mod global_functions;
 
 pub struct ArgsT {
     pub args: Vec<*mut ValueT>,
@@ -58,6 +59,16 @@ impl ValueT {
     value_constructor!(as_boolean, Boolean, bool);
     value_constructor!(as_function, Function, Function);
     value_constructor!(as_object, Object, Object);
+
+    pub fn to_log_string(&self) -> String {
+        match &self.inner {
+            ValueInner::Number(n) => format!("{}", n),
+            ValueInner::String(s) => format!("{}", s),
+            ValueInner::Boolean(b) => format!("{}", b),
+            ValueInner::Function(_) => format!("[Function]"),
+            ValueInner::Object(_) => format!("[Object]"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -89,6 +100,8 @@ pub struct Function {
     pub pointer: extern "C" fn(args: &ArgsT) -> *mut ValueT,
     pub capture: Vec<*mut ValueT>,
     pub this: *mut ValueT,
+    pub prototype: *mut ValueT,
+    pub properties: HashMap<String, *mut ValueT>,
 }
 
 impl Function {
@@ -97,6 +110,8 @@ impl Function {
             pointer,
             capture: vec![],
             this: undefined_mut(),
+            prototype: alloc(ValueT::Object(Object::default())),
+            properties: HashMap::new(),
         }
     }
 }
@@ -116,11 +131,30 @@ enum Pointer<'a, T> {
     Value(&'a T),
 }
 
+impl<'a, T> Pointer<'a, T> {
+    pub fn as_value(self) -> Option<&'a T> {
+        match self {
+            Pointer::Value(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 enum PointerMut<'a, T> {
     Null,
     Undefined,
     Value(&'a mut T),
+}
+
+impl<'a, T> PointerMut<'a, T> {
+    #[allow(unused)]
+    pub fn unwrap_value(self) -> &'a mut T {
+        match self {
+            PointerMut::Value(v) => v,
+            _ => panic!("Pointer is not a value"),
+        }
+    }
 }
 
 impl<'a, T> From<*mut T> for PointerMut<'a, T> {
@@ -207,31 +241,41 @@ extern "C" fn console_log(args: &ArgsT) -> *mut ValueT {
 macro_rules! swcjs_object {
     ($($name: literal : $value: expr),*) => {
         {
-            let mut object: Object = Default::default();
+            let mut object: $crate::Object = Default::default();
             $(
                 object.properties.insert($name.to_string(), $value);
             )*
-            alloc(ValueT::Object(object))
+            $crate::alloc(ValueT::Object(object))
         }
     };
 }
+
+pub(crate) use swcjs_object;
 
 #[no_mangle]
 pub extern "C" fn swcjs_initialize() {
     gc::init();
 
     global_constructors::init();
+    global_functions::init();
 
     init_console();
     init_swcjs();
 }
 
-fn init_swcjs() {
-    let gc_fn = alloc(ValueT::Function(Function::internal(gc::swcjs_gc)));
+pub(crate) fn internal_function(fun: extern "C" fn(args: &ArgsT) -> *mut ValueT) -> *mut ValueT {
+    alloc(ValueT::Function(Function::internal(fun)))
+}
 
+fn init_swcjs() {
     unsafe {
         swcjs_global___swcjs__ = swcjs_object! {
-            "gc": gc_fn
+            "gc": internal_function(gc::swcjs_gc),
+            "gc_enable_logging": internal_function(gc::swcjs_gc_enable_logging),
+            "gc_disable_logging": internal_function(gc::swcjs_gc_disable_logging),
+            "gc_store_ptr": internal_function(gc::swcjs_gc_store_ptr),
+            "gc_assert_saved": internal_function(gc::swcjs_gc_assert_saved),
+            "gc_assert_freed": internal_function(gc::swcjs_gc_assert_freed)
         };
         gc::register_static(NonNull::from(&swcjs_global___swcjs__));
     }
@@ -242,7 +286,8 @@ fn init_console() {
 
     unsafe {
         swcjs_global_console = swcjs_object! {
-            "log": console_log
+            "log": console_log,
+            "assert": global_functions::swcjs_global_assert
         };
         gc::register_static(NonNull::from(&swcjs_global_console));
     }
@@ -380,6 +425,9 @@ extern "C" fn function_bind(args: &ArgsT) -> *mut ValueT {
         alloc(ValueT::Function(Function {
             pointer: old_fun.pointer,
             capture: old_fun.capture.clone(),
+            properties: old_fun.properties.clone(),
+            // V8 does this...
+            prototype: undefined_mut(),
             this: new_this,
         }))
     } else {
@@ -401,14 +449,17 @@ pub extern "C" fn swcjs_expr_member(val_raw: *mut ValueT, prop: *const c_char) -
                 .get(&prop)
                 .cloned()
                 .unwrap_or(undefined_mut()),
-            ValueInner::Function(_) => match prop.as_str() {
+            ValueInner::Function(fun) => match prop.as_str() {
                 "bind" => alloc(ValueT::Function(Function {
+                    properties: HashMap::new(),
+                    prototype: undefined_mut(),
                     pointer: function_bind,
                     capture: vec![val_raw],
                     this: undefined_mut(),
                 })),
                 "constructor" => unsafe { global_constructors::swcjs_global_Function },
-                _ => undefined_mut(),
+                "prototype" => unsafe { global_constructors::swcjs_global_Function },
+                prop => fun.properties.get(prop).cloned().unwrap_or(undefined_mut()),
             },
             ValueInner::Number(_) => match prop.as_str() {
                 "constructor" => unsafe { global_constructors::swcjs_global_Number },
