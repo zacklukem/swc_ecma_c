@@ -16,7 +16,7 @@ pub mod global_functions;
 
 pub struct ArgsT {
     pub args: Vec<*mut ValueT>,
-    pub capture: &'static [*mut ValueT],
+    pub capture: Vec<*mut ValueT>,
     pub this: *mut ValueT,
 }
 
@@ -110,6 +110,20 @@ impl Function {
             pointer,
             capture: vec![],
             this: undefined_mut(),
+            prototype: alloc(ValueT::Object(Object::default())),
+            properties: HashMap::new(),
+        }
+    }
+
+    fn new(
+        pointer: extern "C" fn(args: &ArgsT) -> *mut ValueT,
+        capture: Vec<*mut ValueT>,
+        this: *mut ValueT,
+    ) -> Self {
+        Self {
+            pointer,
+            capture,
+            this,
             prototype: alloc(ValueT::Object(Object::default())),
             properties: HashMap::new(),
         }
@@ -346,16 +360,36 @@ pub extern "C" fn swcjs_args_nth(con: *const ArgsT, n: u16) -> *mut ValueT {
 }
 
 #[no_mangle]
+pub extern "C" fn swcjs_args_closure_nth(con: *const ArgsT, n: u16) -> *mut ValueT {
+    debug_assert!(con != null());
+    debug_assert!(con != undefined());
+    let con = unsafe { &*con };
+    con.capture.get(n as usize).cloned().unwrap()
+}
+
+#[no_mangle]
 pub extern "C" fn swcjs_init_global_fn(fun: extern "C" fn(&ArgsT) -> *mut ValueT) -> *mut ValueT {
     // TODO: capture this from module
     alloc(ValueT::Function(Function::internal(fun)))
 }
 
 #[no_mangle]
-pub extern "C" fn swcjs_init_anon_fn(fun: extern "C" fn(&ArgsT) -> *mut ValueT) -> *mut ValueT {
+pub unsafe extern "C" fn swcjs_init_anon_fn(
+    fun: extern "C" fn(&ArgsT) -> *mut ValueT,
+    argc: u16,
+    mut closure: ...
+) -> *mut ValueT {
     // TODO: capture this from module
     // TODO: closure
-    alloc(ValueT::Function(Function::internal(fun)))
+    let mut closure_list: Vec<*mut ValueT> = vec![];
+    for _ in 0..argc {
+        closure_list.push(closure.arg())
+    }
+    alloc(ValueT::Function(Function::new(
+        fun,
+        closure_list,
+        undefined_mut(),
+    )))
 }
 
 #[no_mangle]
@@ -378,7 +412,7 @@ pub unsafe extern "C" fn swcjs_expr_call(
     {
         (fun.pointer)(&ArgsT {
             args: args_list,
-            capture: &fun.capture,
+            capture: fun.capture.clone(),
             this: fun.this,
         })
     } else {
@@ -406,7 +440,7 @@ pub unsafe extern "C" fn swcjs_expr_new(fun: *mut ValueT, argc: u16, mut args: .
     {
         (fun.pointer)(&ArgsT {
             args: args_list,
-            capture: &fun.capture,
+            capture: fun.capture.clone(),
             this: new_this,
         });
         new_this

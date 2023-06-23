@@ -56,17 +56,36 @@ pub fn main() {
         .unwrap();
 }
 
+#[derive(Debug)]
+struct Closure {
+    scopes: Vec<Scope>,
+    closure_mappings: HashMap<String, (String, String)>,
+}
+
+impl Closure {
+    fn resolve(&self, name: &str) -> Option<Cow<'static, str>> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(v) = scope.varmap.get(name) {
+                return Some(v.clone());
+            }
+        }
+        None
+    }
+}
+
+#[derive(Debug)]
 struct Scope {
     varmap: HashMap<String, Cow<'static, str>>,
     scope_end: BufWriter<Vec<u8>>,
 }
 
 struct CodegenContext {
-    scope_stack: Vec<Scope>,
+    closure_stack: Vec<Closure>,
     _source_file: Lrc<SourceFile>,
     filename_prefix: String,
     varname_counter: usize,
     annon_fn_counter: usize,
+    globals: HashMap<String, Cow<'static, str>>,
 }
 
 #[derive(Debug)]
@@ -132,16 +151,33 @@ fn reformat_filename(filename: &FileName) -> String {
 }
 
 macro_rules! scope {
-    ($self: expr, None, $block: expr) => {
+    ($self: expr, None, $block: expr) => {{
         $self.enter_scope();
         $block;
         $self.exit_scope(None::<&mut Vec<u8>>)
-    };
-    ($self: expr, $w: expr, $block: expr) => {
+    }};
+    ($self: expr, $w: expr, $block: expr) => {{
         $self.enter_scope();
         $block;
         $self.exit_scope($w)
-    };
+    }};
+}
+
+macro_rules! scope_closure {
+    ($self: expr, None, $block: expr) => {{
+        $self.enter_closure_scope();
+        $self.enter_scope();
+        $block;
+        $self.exit_scope(None::<&mut Vec<u8>>);
+        $self.exit_closure_scope()
+    }};
+    ($self: expr, $w: expr, $block: expr) => {{
+        $self.enter_closure_scope();
+        $self.enter_scope();
+        $block;
+        $self.exit_scope($w);
+        $self.exit_closure_scope()
+    }};
 }
 
 struct CodegenBuffers {
@@ -154,29 +190,76 @@ impl CodegenContext {
     fn new(source_file: Lrc<SourceFile>) -> Self {
         let filename_prefix = reformat_filename(&source_file.name);
         CodegenContext {
-            scope_stack: vec![],
+            closure_stack: vec![],
             _source_file: source_file,
             filename_prefix,
             varname_counter: 0,
             annon_fn_counter: 0,
+            globals: HashMap::new(),
         }
     }
 
     fn scope_end(&mut self) -> Option<&mut impl Write> {
-        Some(&mut self.scope_stack.last_mut()?.scope_end)
+        Some(
+            &mut self
+                .closure_stack
+                .last_mut()
+                .unwrap()
+                .scopes
+                .last_mut()
+                .unwrap()
+                .scope_end,
+        )
     }
 
-    fn resolve(&self, name: &str) -> Option<Cow<'static, str>> {
-        for scope in self.scope_stack.iter().rev() {
-            if let Some(v) = scope.varmap.get(name) {
-                return Some(v.clone());
+    fn resolve_nth(&mut self, name: &str, i: isize) -> Option<(bool, Cow<'static, str>)> {
+        if i < 0 {
+            return self.globals.get(name).map(|v| (true, v.clone()));
+        }
+
+        if let Some(v) = self.closure_stack[i as usize].resolve(&name) {
+            return Some((false, v));
+        } else if let Some((_parent_name, my_var_name)) =
+            self.closure_stack[i as usize].closure_mappings.get(name)
+        {
+            return Some((false, my_var_name.clone().into()));
+        } else {
+            if let Some((is_global, parent_name)) = self.resolve_nth(name, i - 1) {
+                if is_global {
+                    return Some((true, parent_name));
+                } else {
+                    let my_var_name = self.get_var_name(name.as_ref());
+                    self.closure_stack[i as usize].closure_mappings.insert(
+                        name.to_string(),
+                        (parent_name.to_string(), my_var_name.clone().into()),
+                    );
+                    return Some((false, my_var_name.into()));
+                }
             }
         }
         None
     }
 
+    fn resolve(&mut self, name: &str) -> Option<Cow<'static, str>> {
+        self.resolve_nth(name, self.closure_stack.len() as isize - 1)
+            .map(|(_, v)| v)
+    }
+
+    fn get_var_name(&mut self, name: &str) -> String {
+        let rename = format!("{}_{}", name, self.varname_counter).into();
+        self.varname_counter += 1;
+        rename
+    }
+
+    fn declare_global(&mut self, arg: String, rename: Cow<'static, str>) {
+        self.globals.insert(arg, rename);
+    }
+
     fn declare(&mut self, name: &str, rename: Cow<'static, str>) {
-        self.scope_stack
+        self.closure_stack
+            .last_mut()
+            .unwrap()
+            .scopes
             .last_mut()
             .unwrap()
             .varmap
@@ -184,19 +267,12 @@ impl CodegenContext {
     }
 
     fn declare_new(&mut self, name: &str) -> Cow<'static, str> {
-        if self.scope_stack.is_empty() {
+        if self.closure_stack.is_empty() {
             panic!("no scope");
         }
-        if self.scope_stack.len() == 1 {
-            let rename: Cow<'static, str> = format!("{}_{}", self.filename_prefix, name).into();
-            self.declare(name, rename.clone());
-            rename
-        } else {
-            let rename: Cow<'static, str> = format!("{}_{}", name, self.varname_counter).into();
-            self.declare(name, rename.clone());
-            self.varname_counter += 1;
-            rename
-        }
+        let rename: Cow<'static, str> = self.get_var_name(name).into();
+        self.declare(name, rename.clone());
+        rename
     }
 
     fn get_anonymous_fn_name(&mut self) -> String {
@@ -208,16 +284,27 @@ impl CodegenContext {
         name
     }
 
+    fn enter_closure_scope(&mut self) {
+        self.closure_stack.push(Closure {
+            scopes: vec![],
+            closure_mappings: HashMap::new(),
+        })
+    }
+
+    fn exit_closure_scope(&mut self) -> Closure {
+        self.closure_stack.pop().unwrap()
+    }
+
     fn enter_scope(&mut self) {
-        self.scope_stack.push(Scope {
+        self.closure_stack.last_mut().unwrap().scopes.push(Scope {
             varmap: HashMap::new(),
             scope_end: BufWriter::new(Vec::new()),
         })
     }
 
     fn exit_scope(&mut self, w: Option<&mut impl Write>) {
-        let scope = self.scope_stack.pop();
-        if let (Some(scope), Some(w)) = (scope, w) {
+        let scope = self.closure_stack.last_mut().unwrap().scopes.pop().unwrap();
+        if let Some(w) = w {
             w.write_all(scope.scope_end.into_inner().unwrap().as_slice())
                 .unwrap();
         }
@@ -228,9 +315,57 @@ impl CodegenContext {
         fun_name: &str,
         buffers: &mut CodegenBuffers,
         function: &Function,
-    ) -> Result<(), CodegenError> {
+    ) -> Result<Vec<String>, CodegenError> {
+        let mut fun_buffer = BufWriter::new(Vec::new());
+
         let mut fun_top = BufWriter::new(Vec::new());
         let mut fun_body = BufWriter::new(Vec::new());
+
+        let scope = scope_closure!(self, None, {
+            for (i, param) in function.params.iter().enumerate() {
+                if let Pat::Ident(id) = &param.pat {
+                    let sym_name = self.declare_new(&id.sym);
+                    writeln!(
+                        &mut fun_buffer,
+                        "{VALUE_TYPE} {sym_name} = {args_nth}(__args__, {i});",
+                        args_nth = internal_func!("args_nth"),
+                    )?;
+                    writeln!(
+                        &mut fun_buffer,
+                        "{gc_stack_add}(&{sym_name});",
+                        gc_stack_add = internal_func!("gc_stack_add"),
+                    )?;
+                } else {
+                    todo!()
+                }
+            }
+
+            writeln!(
+                &mut fun_buffer,
+                "{VALUE_TYPE} __this__ = {args_get_this}(__args__);",
+                args_get_this = internal_func!("args_get_this")
+            )?;
+
+            if let Some(body) = &function.body {
+                scope!(self, Some(&mut fun_buffer), {
+                    for stmt in &body.stmts {
+                        self.gen_stmt(&mut fun_body, buffers, &mut fun_top, stmt)?;
+                    }
+                    writeln!(&mut fun_buffer, "{{")?;
+                    fun_buffer.write_all(fun_top.into_inner().unwrap().as_slice())?;
+                    fun_buffer.write_all(fun_body.into_inner().unwrap().as_slice())?;
+                });
+                writeln!(&mut fun_buffer, "}}")?;
+            }
+            writeln!(
+                &mut fun_buffer,
+                "{gc_end_frame}();",
+                gc_end_frame = internal_func!("gc_end_frame"),
+            )?;
+            writeln!(&mut fun_buffer, "return {UNDEFINED};")?;
+        });
+
+        let closures = scope.closure_mappings.into_iter().collect::<Vec<_>>();
 
         writeln!(
             &mut buffers.header,
@@ -248,55 +383,29 @@ impl CodegenContext {
             gc_begin_frame = internal_func!("gc_begin_frame"),
         )?;
 
-        scope!(self, None, {
-            for (i, param) in function.params.iter().enumerate() {
-                if let Pat::Ident(id) = &param.pat {
-                    let sym_name = self.declare_new(&id.sym);
-                    writeln!(
-                        &mut buffers.fun_impl,
-                        "{VALUE_TYPE} {sym_name} = {args_nth}(__args__, {i});",
-                        args_nth = internal_func!("args_nth"),
-                    )?;
-                    writeln!(
-                        &mut buffers.fun_impl,
-                        "{gc_stack_add}(&{sym_name});",
-                        gc_stack_add = internal_func!("gc_stack_add"),
-                    )?;
-                } else {
-                    todo!()
-                }
-            }
+        let mut closure_args = Vec::with_capacity(closures.len());
+
+        for (i, (_, (parent_name, sym_name))) in closures.into_iter().enumerate() {
+            closure_args.push(parent_name);
 
             writeln!(
                 &mut buffers.fun_impl,
-                "{VALUE_TYPE} __this__ = {args_get_this}(__args__);",
-                args_get_this = internal_func!("args_get_this")
+                "{VALUE_TYPE} {sym_name} = {args_closure_nth}(__args__, {i});",
+                args_closure_nth = internal_func!("args_closure_nth"),
             )?;
-
-            if let Some(body) = &function.body {
-                scope!(self, Some(&mut buffers.fun_impl), {
-                    for stmt in &body.stmts {
-                        self.gen_stmt(&mut fun_body, buffers, &mut fun_top, stmt)?;
-                    }
-                    writeln!(&mut buffers.fun_impl, "{{")?;
-                    buffers
-                        .fun_impl
-                        .write_all(fun_top.into_inner().unwrap().as_slice())?;
-                    buffers
-                        .fun_impl
-                        .write_all(fun_body.into_inner().unwrap().as_slice())?;
-                });
-                writeln!(&mut buffers.fun_impl, "}}")?;
-            }
             writeln!(
                 &mut buffers.fun_impl,
-                "{gc_end_frame}();",
-                gc_end_frame = internal_func!("gc_end_frame"),
+                "{gc_stack_add}(&{sym_name});",
+                gc_stack_add = internal_func!("gc_stack_add"),
             )?;
-            writeln!(&mut buffers.fun_impl, "return {UNDEFINED};")?;
-        });
+        }
+
+        buffers
+            .fun_impl
+            .write_all(fun_buffer.into_inner().unwrap().as_slice())?;
+
         writeln!(&mut buffers.fun_impl, "}}")?;
-        Ok(())
+        Ok(closure_args)
     }
 
     fn gen_top_level_function(
@@ -304,7 +413,9 @@ impl CodegenContext {
         fun_decl: &FnDecl,
         buffers: &mut CodegenBuffers,
     ) -> Result<(), CodegenError> {
-        let fun_name = self.declare_new(&fun_decl.ident.sym);
+        let fun_name = format!("{}_{}", self.filename_prefix, fun_decl.ident.sym);
+        self.declare_global(fun_decl.ident.sym.to_string(), fun_name.clone().into());
+
         self.gen_function_body(&format!("{fun_name}_impl"), buffers, &fun_decl.function)?;
 
         writeln!(
@@ -326,14 +437,14 @@ impl CodegenContext {
     }
 
     fn init_globals(&mut self) {
-        self.declare("console", internal_global!("console").into());
-        self.declare("__swcjs__", internal_global!("__swcjs__").into());
-        self.declare("Object", internal_global!("Object").into());
-        self.declare("Number", internal_global!("Number").into());
-        self.declare("String", internal_global!("String").into());
-        self.declare("Function", internal_global!("Function").into());
-        self.declare("Boolean", internal_global!("Boolean").into());
-        self.declare("assert", internal_global!("assert").into());
+        self.declare_global("console".into(), internal_global!("console").into());
+        self.declare_global("__swcjs__".into(), internal_global!("__swcjs__").into());
+        self.declare_global("Object".into(), internal_global!("Object").into());
+        self.declare_global("Number".into(), internal_global!("Number").into());
+        self.declare_global("String".into(), internal_global!("String").into());
+        self.declare_global("Function".into(), internal_global!("Function").into());
+        self.declare_global("Boolean".into(), internal_global!("Boolean").into());
+        self.declare_global("assert".into(), internal_global!("assert").into());
     }
 
     fn gen_module(
@@ -351,9 +462,10 @@ impl CodegenContext {
             mod_init_fun: BufWriter::new(Vec::new()),
         };
 
-        scope!(this, None, {
-            this.init_globals();
-
+        // GLOBAL SCOPE
+        this.init_globals();
+        // Main scope
+        scope_closure!(this, None, {
             for item in &module.body {
                 match item {
                     ModuleItem::Stmt(Stmt::Decl(Decl::Fn(fun_decl))) => {
@@ -580,13 +692,18 @@ impl CodegenContext {
 
                 let fun_name = self.get_anonymous_fn_name();
 
-                self.gen_function_body(&fun_name, buffers, &fn_expr.function)?;
+                let closures = self.gen_function_body(&fun_name, buffers, &fn_expr.function)?;
 
                 write!(
                     w,
-                    "{init_anon_fn}({fun_name})",
-                    init_anon_fn = internal_func!("init_anon_fn")
+                    "{init_anon_fn}({fun_name},{num_closures}",
+                    init_anon_fn = internal_func!("init_anon_fn"),
+                    num_closures = closures.len()
                 )?;
+                for closure in closures {
+                    write!(w, ",{}", closure)?;
+                }
+                write!(w, ")")?;
             }
             t => todo!("{:?}", t),
         }

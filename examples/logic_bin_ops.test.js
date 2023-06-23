@@ -1,20 +1,18 @@
-function fail_inner(v) {
-  console.log("FAIL", this.fail);
-  this.fail = this.fail + 1;
-  console.assert(false, "FAIL INNER");
-  return v;
-}
-
-function pass_inner(v) {
-  console.log("OK", this.pass);
-  this.pass = this.pass + 1;
-  return v;
-}
-
 // TODO: implement this using closures
 let state = { pass: 1, fail: 1 };
-let pass = pass_inner.bind(state);
-let fail = fail_inner.bind(state);
+
+let fail = function (v) {
+  console.log("FAIL", state.fail);
+  state.fail = state.fail + 1;
+  console.assert(false, "FAIL INNER");
+  return v;
+};
+
+let pass = function (v) {
+  console.log("OK", state.pass);
+  state.pass = state.pass + 1;
+  return v;
+};
 
 if (true && pass(false)) fail();
 if (false && fail(false)) fail();
