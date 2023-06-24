@@ -3,3 +3,4 @@ target
 examples/_build
 
 runtime/include/swcjs_binding.h
+/.vscode

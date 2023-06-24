@@ -41,6 +41,7 @@ impl CodegenContext {
                         self.gen_stmt(w, buffers, fun_top, stmt)?;
                     }
                 });
+                self.gen_gc_run(w)?;
                 write!(w, "}}\n")?;
             }
             Stmt::For(for_stmt) => {

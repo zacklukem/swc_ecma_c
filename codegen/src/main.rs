@@ -322,6 +322,11 @@ impl CodegenContext {
         }
     }
 
+    fn gen_gc_run(&mut self, w: &mut impl Write) -> Result<(), CodegenError> {
+        writeln!(w, "{gc_run}();", gc_run = internal_func!("gc_run"),)?;
+        Ok(())
+    }
+
     fn gen_function_body(
         &mut self,
         fun_name: &str,
@@ -357,6 +362,11 @@ impl CodegenContext {
                 "{VALUE_TYPE} __this__ = {args_get_this}(__args__);",
                 args_get_this = internal_func!("args_get_this")
             )?;
+            writeln!(
+                &mut fun_buffer,
+                "{gc_stack_add}(&__this__);",
+                gc_stack_add = internal_func!("gc_stack_add"),
+            )?;
 
             if let Some(body) = &function.body {
                 scope!(self, Some(&mut fun_buffer), {
@@ -367,6 +377,8 @@ impl CodegenContext {
                     fun_buffer.write_all(fun_top.into_inner().unwrap().as_slice())?;
                     fun_buffer.write_all(fun_body.into_inner().unwrap().as_slice())?;
                 });
+
+                self.gen_gc_run(&mut fun_buffer)?;
                 writeln!(&mut fun_buffer, "}}")?;
             }
             writeln!(
@@ -516,6 +528,7 @@ impl CodegenContext {
         w.write_all(main_fun_top.into_inner().unwrap().as_slice())?;
         w.write_all(main_fun.into_inner().unwrap().as_slice())?;
         writeln!(w, "}}")?;
+        this.gen_gc_run(w)?;
         writeln!(
             w,
             "{gc_end_frame}();",

@@ -10,7 +10,7 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
-use crate::{undefined_mut, ArgsT, Pointer, ValueInner, ValueT};
+use crate::{undefined_mut, ArgsT, Function, Object, Pointer, ValueInner, ValueT};
 
 struct StackFrame {
     vars: Vec<NonNull<*mut ValueT>>,
@@ -143,7 +143,7 @@ impl GcState {
         let objects = gc.objects.get_mut().unwrap();
         for obj in objects.extract_if(|v| !self.marked.contains(v)) {
             if ENABLE_LOGGING.load(std::sync::atomic::Ordering::Relaxed) {
-                println!("GC: Dropping");
+                eprintln!("GC: Dropping: {:p}: {:?}", obj.v, unsafe { &*obj.v });
             }
             unsafe {
                 drop(Box::from_raw(obj.v));
@@ -164,20 +164,31 @@ impl GcState {
             }
 
             self.marked.insert(value);
+            let ValueT { inner } = value.deref();
 
-            match &value.inner {
+            match inner {
                 ValueInner::Object(obj) => {
-                    self.mark(obj.constructor);
-                    self.mark_all(obj.properties.values());
+                    let Object {
+                        constructor,
+                        properties,
+                    } = obj;
+                    self.mark(*constructor);
+                    self.mark_all(properties.values());
                 }
                 ValueInner::Function(func) => {
-                    self.mark(func.this);
-                    self.mark(func.prototype);
-                    self.mark_all(func.capture.iter());
-                    self.mark_all(func.properties.values());
+                    let Function {
+                        pointer: _,
+                        capture,
+                        this,
+                        prototype,
+                        properties,
+                    } = func;
+                    self.mark(*this);
+                    self.mark(*prototype);
+                    self.mark_all(capture.iter());
+                    self.mark_all(properties.values());
                 }
-
-                _ => {}
+                ValueInner::Boolean(_) | ValueInner::Number(_) | ValueInner::String(_) => {}
             }
         }
     }
@@ -189,6 +200,11 @@ pub fn run_gc() {
         marked: HashSet::new(),
     }
     .run(&mut gc)
+}
+
+#[no_mangle]
+pub extern "C" fn swcjs_gc_run() {
+    run_gc();
 }
 
 pub(crate) extern "C" fn swcjs_gc(_args: &ArgsT) -> *mut ValueT {

@@ -281,6 +281,15 @@ pub(crate) fn internal_function(fun: extern "C" fn(args: &ArgsT) -> *mut ValueT)
     alloc(ValueT::Function(Function::internal(fun)))
 }
 
+#[no_mangle]
+pub extern "C" fn swcjs_debug_log(s: &ArgsT) -> *mut ValueT {
+    for arg in &s.args {
+        let s = Pointer::from(*arg);
+        eprintln!("{:p}: {:#?}", *arg, s);
+    }
+    undefined_mut()
+}
+
 fn init_swcjs() {
     unsafe {
         swcjs_global___swcjs__ = swcjs_object! {
@@ -289,7 +298,9 @@ fn init_swcjs() {
             "gc_disable_logging": internal_function(gc::swcjs_gc_disable_logging),
             "gc_store_ptr": internal_function(gc::swcjs_gc_store_ptr),
             "gc_assert_saved": internal_function(gc::swcjs_gc_assert_saved),
-            "gc_assert_freed": internal_function(gc::swcjs_gc_assert_freed)
+            "gc_assert_freed": internal_function(gc::swcjs_gc_assert_freed),
+
+            "debug_log": internal_function(swcjs_debug_log)
         };
         gc::register_static(NonNull::from(&swcjs_global___swcjs__));
     }
