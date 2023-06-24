@@ -468,6 +468,7 @@ impl CodegenContext {
         self.declare_global("String".into(), internal_global!("String").into());
         self.declare_global("Function".into(), internal_global!("Function").into());
         self.declare_global("Boolean".into(), internal_global!("Boolean").into());
+        self.declare_global("Array".into(), internal_global!("Array").into());
         self.declare_global("assert".into(), internal_global!("assert").into());
     }
 

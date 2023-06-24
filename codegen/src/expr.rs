@@ -153,16 +153,23 @@ impl CodegenContext {
                 self.gen_expr(w, buffers, fun_top, &bin.right)?;
                 write!(w, ")")?;
             }
-            Expr::Member(member) => {
-                write!(w, "{}(", internal_func!("expr_member"))?;
-                self.gen_expr(w, buffers, fun_top, &member.obj)?;
-                write!(w, ",")?;
-                match &member.prop {
-                    MemberProp::Ident(id) => write!(w, "\"{}\"", id.sym)?,
-                    _ => todo!(),
+            Expr::Member(member) => match &member.prop {
+                MemberProp::Ident(id) => {
+                    write!(w, "{}(", internal_func!("expr_member"))?;
+                    self.gen_expr(w, buffers, fun_top, &member.obj)?;
+                    write!(w, ",")?;
+                    write!(w, "\"{}\"", id.sym)?;
+                    write!(w, ")")?;
                 }
-                write!(w, ")")?;
-            }
+                MemberProp::Computed(expr) => {
+                    write!(w, "{}(", internal_func!("expr_computed_member"))?;
+                    self.gen_expr(w, buffers, fun_top, &member.obj)?;
+                    write!(w, ",")?;
+                    self.gen_expr(w, buffers, fun_top, &expr.expr)?;
+                    write!(w, ")")?;
+                }
+                p => todo!("{p:?}"),
+            },
             Expr::Object(obj) => {
                 write!(w, "{}({}", internal_func!("expr_init_obj"), obj.props.len())?;
                 for prop in &obj.props {
@@ -195,6 +202,23 @@ impl CodegenContext {
                 )?;
                 for closure in closures {
                     write!(w, ",{}", closure)?;
+                }
+                write!(w, ")")?;
+            }
+            // Expr::
+            Expr::Array(array) => {
+                write!(
+                    w,
+                    "{lit_array}({num_el}",
+                    lit_array = internal_func!("lit_array"),
+                    num_el = array.elems.len()
+                )?;
+                for elem in &array.elems {
+                    write!(w, ",")?;
+                    match elem {
+                        Some(elem) => self.gen_expr(w, buffers, fun_top, &elem.expr)?,
+                        None => write!(w, "{UNDEFINED}")?,
+                    }
                 }
                 write!(w, ")")?;
             }

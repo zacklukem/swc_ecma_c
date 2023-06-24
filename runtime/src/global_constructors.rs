@@ -1,6 +1,6 @@
 use crate::{
-    alloc, gc, internal_function, undefined_mut, ArgsT, Function, Object, Pointer, ValueInner,
-    ValueT,
+    alloc, array::construct_array, gc, internal_function, undefined_mut, ArgsT, Function, Object,
+    Pointer, ValueInner, ValueT,
 };
 use std::ptr::NonNull;
 
@@ -44,6 +44,14 @@ extern "C" fn boolean_constructor(_args: &ArgsT) -> *mut ValueT {
     undefined_mut()
 }
 
+#[no_mangle]
+pub static mut swcjs_global_Array: *mut ValueT = undefined_mut();
+
+extern "C" fn array_constructor(args: &ArgsT) -> *mut ValueT {
+    construct_array(args.this, args.args.clone());
+    undefined_mut()
+}
+
 extern "C" fn object_create(args: &ArgsT) -> *mut ValueT {
     let proto = Pointer::from(args.args[0]);
 
@@ -83,4 +91,5 @@ pub fn init() {
     initialize_constructor!(swcjs_global_String, string_constructor);
     initialize_constructor!(swcjs_global_Function, function_constructor);
     initialize_constructor!(swcjs_global_Boolean, boolean_constructor);
+    initialize_constructor!(swcjs_global_Array, array_constructor);
 }

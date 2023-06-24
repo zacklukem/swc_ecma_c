@@ -1,5 +1,6 @@
 // *HEAPS* of unsafe code here :p
 
+use crate::value::*;
 use parking_lot::Mutex;
 use std::{
     cell::OnceCell,
@@ -10,7 +11,9 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
-use crate::{undefined_mut, ArgsT, Function, Object, Pointer, ValueInner, ValueT};
+use crate::{
+    undefined_mut, ArgsT, Function, InternalObjectData, Object, Pointer, ValueInner, ValueT,
+};
 
 struct StackFrame {
     vars: Vec<NonNull<*mut ValueT>>,
@@ -170,10 +173,17 @@ impl GcState {
                 ValueInner::Object(obj) => {
                     let Object {
                         constructor,
+                        internal_data,
                         properties,
                     } = obj;
                     self.mark(*constructor);
                     self.mark_all(properties.values());
+                    match internal_data {
+                        InternalObjectData::Array(array) => {
+                            self.mark_all(array.iter());
+                        }
+                        InternalObjectData::None => {}
+                    }
                 }
                 ValueInner::Function(func) => {
                     let Function {
@@ -227,7 +237,7 @@ pub(crate) extern "C" fn swcjs_gc_store_ptr(_args: &ArgsT) -> *mut ValueT {
 
     crate::swcjs_object! {
         // TODO: use bigint
-        "ptr": alloc(ValueT::String(format!("{}", pointer)))
+        "ptr": make_string(format!("{}", pointer))
     }
 }
 

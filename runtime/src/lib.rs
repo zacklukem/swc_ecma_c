@@ -8,11 +8,14 @@ use std::{
     ffi::CStr,
     ptr::{null, null_mut, NonNull},
 };
+use value::*;
 
+pub mod array;
 pub mod binop;
 pub mod gc;
 pub mod global_constructors;
 pub mod global_functions;
+pub mod value;
 
 pub struct ArgsT {
     pub args: Vec<*mut ValueT>,
@@ -35,7 +38,7 @@ pub enum ValueInner {
 }
 
 macro_rules! value_constructor {
-    ($as_name:ident, $name: ident, $inner_ty: ty) => {
+    ($as_name_mut: ident, $as_name:ident, $name: ident, $inner_ty: ty) => {
         #[allow(non_snake_case)]
         pub fn $name(n: $inner_ty) -> Self {
             Self {
@@ -50,15 +53,23 @@ macro_rules! value_constructor {
                 None
             }
         }
+
+        pub fn $as_name_mut(&mut self) -> Option<&mut $inner_ty> {
+            if let ValueInner::$name(n) = &mut self.inner {
+                Some(n)
+            } else {
+                None
+            }
+        }
     };
 }
 
 impl ValueT {
-    value_constructor!(as_number, Number, f64);
-    value_constructor!(as_string, String, String);
-    value_constructor!(as_boolean, Boolean, bool);
-    value_constructor!(as_function, Function, Function);
-    value_constructor!(as_object, Object, Object);
+    value_constructor!(as_number_mut, as_number, Number, f64);
+    value_constructor!(as_string_mut, as_string, String, String);
+    value_constructor!(as_boolean_mut, as_boolean, Boolean, bool);
+    value_constructor!(as_function_mut, as_function, Function, Function);
+    value_constructor!(as_object_mut, as_object, Object, Object);
 
     pub fn to_log_string(&self) -> String {
         match &self.inner {
@@ -72,8 +83,33 @@ impl ValueT {
 }
 
 #[derive(Debug, Clone)]
+pub enum InternalObjectData {
+    None,
+    Array(Vec<*mut ValueT>),
+}
+
+impl InternalObjectData {
+    pub fn as_array(&self) -> Option<&Vec<*mut ValueT>> {
+        if let InternalObjectData::Array(array) = self {
+            Some(array)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_array_mut(&mut self) -> Option<&mut Vec<*mut ValueT>> {
+        if let InternalObjectData::Array(array) = self {
+            Some(array)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Object {
     pub constructor: *mut ValueT,
+    pub internal_data: InternalObjectData,
     pub properties: HashMap<String, *mut ValueT>,
 }
 
@@ -81,6 +117,7 @@ impl Default for Object {
     fn default() -> Self {
         Self {
             constructor: unsafe { global_constructors::swcjs_global_Object },
+            internal_data: InternalObjectData::None,
             properties: HashMap::new(),
         }
     }
@@ -90,6 +127,7 @@ impl Object {
     pub fn new(constructor: *mut ValueT) -> Self {
         Self {
             constructor,
+            internal_data: InternalObjectData::None,
             properties: HashMap::new(),
         }
     }
@@ -162,11 +200,10 @@ enum PointerMut<'a, T> {
 }
 
 impl<'a, T> PointerMut<'a, T> {
-    #[allow(unused)]
-    pub fn unwrap_value(self) -> &'a mut T {
+    pub fn as_value(self) -> Option<&'a mut T> {
         match self {
-            PointerMut::Value(v) => v,
-            _ => panic!("Pointer is not a value"),
+            PointerMut::Value(v) => Some(v),
+            _ => None,
         }
     }
 }
@@ -281,6 +318,13 @@ pub(crate) fn internal_function(fun: extern "C" fn(args: &ArgsT) -> *mut ValueT)
     alloc(ValueT::Function(Function::internal(fun)))
 }
 
+pub(crate) fn class_function(
+    fun: extern "C" fn(args: &ArgsT) -> *mut ValueT,
+    this: *mut ValueT,
+) -> *mut ValueT {
+    alloc(ValueT::Function(Function::new(fun, vec![], this)))
+}
+
 #[no_mangle]
 pub extern "C" fn swcjs_debug_log(s: &ArgsT) -> *mut ValueT {
     for arg in &s.args {
@@ -325,20 +369,20 @@ pub extern "C" fn swcjs_lit_str(s: *const c_char) -> *mut ValueT {
     let s = unsafe { std::ffi::CStr::from_ptr(s) };
     let s = s.to_string_lossy().to_string();
 
-    alloc(ValueT::String(s))
+    make_string(s)
 }
 
 #[no_mangle]
 pub extern "C" fn swcjs_lit_num(v: f64) -> *mut ValueT {
-    alloc(ValueT::Number(v))
+    make_number(v)
 }
 
 #[no_mangle]
 pub extern "C" fn swcjs_lit_bool(v: libc::c_uchar) -> *mut ValueT {
     if v == 0 {
-        return alloc(ValueT::Boolean(false));
+        return make_boolean(false);
     } else {
-        return alloc(ValueT::Boolean(true));
+        return make_boolean(true);
     }
 }
 
